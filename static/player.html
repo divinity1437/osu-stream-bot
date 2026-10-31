@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>osu! replay stream</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080910; font-family: Inter, Arial, sans-serif; }
+    #fallback, #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #080910; }
+    #video { display: none; opacity: 0; transition: opacity .2s linear; }
+    #video.visible { opacity: 1; }
+    #status { position: fixed; left: 24px; bottom: 20px; max-width: 75%; padding: 9px 13px; border-radius: 9px; color: #ddd8ec; background: rgba(8,9,16,.72); font-size: 16px; opacity: .8; }
+    #start { display: none; position: fixed; inset: 0; margin: auto; width: 280px; height: 70px; border: 0; border-radius: 14px; color: white; background: #dd4f92; font-size: 20px; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <img id="fallback" src="/background?v=0" alt="Waiting for the next replay">
+  <video id="video" playsinline preload="auto"></video>
+  <div id="status">Connecting…</div>
+  <button id="start">Start playback</button>
+  <script>
+    const fallback = document.querySelector('#fallback');
+    const video = document.querySelector('#video');
+    const statusBox = document.querySelector('#status');
+    const startButton = document.querySelector('#start');
+    let current = null;
+    let retryTimer = null;
+    let videoErrors = 0;
+    let loading = false;
+    let transitioning = false;
+    let backgroundRevision = null;
+
+    function status(text) { statusBox.textContent = text; }
+    function applyVolume(value) {
+      const volume = Math.max(0, Math.min(100, Number(value) || 0));
+      video.volume = volume / 100;
+      video.muted = volume === 0;
+    }
+    function applyBackground(background) {
+      if (!background || background.revision === backgroundRevision) return;
+      backgroundRevision = background.revision;
+      fallback.src = background.url || `/background?v=${encodeURIComponent(background.revision)}`;
+    }
+    function showFallback(text) {
+      video.classList.remove('visible');
+      video.style.display = 'none';
+      fallback.style.display = 'block';
+      status(text);
+    }
+    function detachVideo() {
+      video.pause();
+      video.classList.remove('visible');
+      video.removeAttribute('src');
+      video.load();
+      video.style.display = 'none';
+    }
+    async function jsonFetch(url, options) {
+      const response = await fetch(url, { cache: 'no-store', ...options });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.json();
+    }
+    async function complete(reason = 'ended') {
+      if (!current) return;
+      const name = current.name;
+      current = null;
+      await jsonFetch('/api/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, reason })
+      }).catch(console.error);
+    }
+    async function loadNext() {
+      if (loading || transitioning) return;
+      loading = true;
+      clearTimeout(retryTimer);
+      try {
+        const item = await jsonFetch('/api/next');
+        if (!item.available) {
+          showFallback(item.phase || 'Rendering the next replay…');
+          retryTimer = setTimeout(loadNext, 2000);
+          return;
+        }
+        current = item;
+        videoErrors = 0;
+        applyVolume(item.volume);
+        fallback.style.display = 'none';
+        video.style.display = 'block';
+        video.src = `${item.url}?v=${encodeURIComponent(item.name)}`;
+        video.load();
+        status(item.label || item.name);
+        try {
+          await video.play();
+          requestAnimationFrame(() => video.classList.add('visible'));
+        } catch (error) {
+          startButton.style.display = 'block';
+          status('Click Start playback to enable audio');
+        }
+      } catch (error) {
+        showFallback(`Player connection error: ${error.message}`);
+        retryTimer = setTimeout(loadNext, 3000);
+      } finally {
+        loading = false;
+      }
+    }
+    async function switchAfterControl() {
+      if (transitioning) return;
+      transitioning = true;
+      clearTimeout(retryTimer);
+      current = null;
+      detachVideo();
+      showFallback('Skipping to the next replay…');
+      setTimeout(() => {
+        transitioning = false;
+        loadNext();
+      }, 250);
+    }
+    async function syncPlayerState() {
+      try {
+        const state = await jsonFetch('/api/player-state');
+        applyVolume(state.volume);
+        applyBackground(state.background);
+        if (current && state.current_video !== current.name) {
+          await switchAfterControl();
+        }
+      } catch (error) {
+        console.error('Player-state sync failed:', error);
+      }
+    }
+    startButton.addEventListener('click', async () => {
+      startButton.style.display = 'none';
+      if (current) {
+        await video.play();
+        video.classList.add('visible');
+      } else {
+        loadNext();
+      }
+    });
+    fallback.addEventListener('error', () => {
+      const defaultUrl = new URL('/static/fallback.svg', window.location.href).href;
+      if (fallback.src !== defaultUrl) fallback.src = defaultUrl;
+    });
+    video.addEventListener('ended', async () => {
+      if (transitioning) return;
+      transitioning = true;
+      video.classList.remove('visible');
+      await complete('ended');
+      detachVideo();
+      showFallback('Loading the next replay…');
+      setTimeout(() => {
+        transitioning = false;
+        loadNext();
+      }, 250);
+    });
+    video.addEventListener('error', async () => {
+      if (!current || transitioning) return;
+      videoErrors += 1;
+      if (videoErrors < 3) {
+        status(`Video read error, retry ${videoErrors}/2…`);
+        setTimeout(() => { video.load(); video.play().catch(() => {}); }, 1500);
+        return;
+      }
+      transitioning = true;
+      await complete('playback-error');
+      detachVideo();
+      showFallback('Skipping a broken video…');
+      setTimeout(() => {
+        transitioning = false;
+        loadNext();
+      }, 1000);
+    });
+    loadNext();
+    syncPlayerState();
+    setInterval(syncPlayerState, 750);
+  </script>
+</body>
+</html>

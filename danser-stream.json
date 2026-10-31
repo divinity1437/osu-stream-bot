@@ -1,0 +1,89 @@
+{
+  "General": {
+    "OsuSongsDir": "songs",
+    "OsuSkinsDir": "skins",
+    "OsuReplaysDir": "replays",
+    "DiscordPresenceOn": false,
+    "UnpackOszFiles": false,
+    "VerboseImportLogs": false
+  },
+  "Graphics": {
+    "Width": 1280,
+    "Height": 720,
+    "WindowWidth": 1280,
+    "WindowHeight": 720,
+    "Fullscreen": false,
+    "VSync": false,
+    "FPSCap": 0,
+    "MSAA": 0,
+    "ShowFPS": false
+  },
+  "Skin": {
+    "CurrentSkin": "default",
+    "FallbackSkin": "default",
+    "UseColorsFromSkin": false,
+    "UseBeatmapColors": false
+  },
+  "Playfield": {
+    "LeadInTime": 0,
+    "LeadInHold": 0,
+    "FadeOutTime": 2,
+    "SeizureWarning": {
+      "Enabled": false,
+      "Duration": 0
+    },
+    "Background": {
+      "LoadStoryboards": false,
+      "LoadVideos": false,
+      "Parallax": {
+        "Enabled": false,
+        "Amount": 0,
+        "Speed": 0
+      }
+    },
+    "Logo": {
+      "Enabled": false,
+      "DrawSpectrum": false
+    },
+    "Bloom": {
+      "Enabled": false
+    }
+  },
+  "Gameplay": {
+    "ScoreBoard": {
+      "Show": false,
+      "ShowAvatars": false
+    },
+    "ShowResultsScreen": true,
+    "ResultsScreenTime": 5,
+    "AlwaysSkipIntro": true
+  },
+  "Recording": {
+    "FrameWidth": 1280,
+    "FrameHeight": 720,
+    "FPS": 60,
+    "EncodingFPSCap": 0,
+    "Encoder": "h264_vaapi",
+    "custom": {
+      "CustomOptions": "-vaapi_device /dev/dri/renderD128 -qp 20 -profile:v high"
+    },
+    "PixelFormat": "nv12",
+    "Filters": "hwupload",
+    "AudioCodec": "aac",
+    "aac": {
+      "Bitrate": "192k",
+      "AdditionalOptions": ""
+    },
+    "AudioFilters": "",
+    "OutputDir": "videos",
+    "Container": "mp4",
+    "ShowFFmpegLogs": false,
+    "MotionBlur": {
+      "Enabled": false,
+      "OversampleMultiplier": 1,
+      "BlendFrames": 1,
+      "BlendFunctionID": 0,
+      "GaussWeightsMult": 1
+    }
+  }
+}
