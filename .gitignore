@@ -1,4 +1,6 @@
 .env
+.env.bak
+.env.tmp.*
 __pycache__/
 *.pyc
 logs/*

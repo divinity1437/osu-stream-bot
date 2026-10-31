@@ -1,3 +1,7 @@
+# 🇷🇺 **[РУКОВОДСТВО НА РУССКОМ ЯЗЫКЕ — ОТКРЫТЬ README_RU.md](README_RU.md)**
+
+---
+
 # osu! replay stream
 
 Local service for an endless osu!standard replay stream. It accepts `.osr` files, queues them, renders videos through o!rdr or local danser, and exposes the result through an OBS Browser Source.
@@ -13,6 +17,7 @@ Local service for an endless osu!standard replay stream. It accepts `.osr` files
 - Skip, delete, and volume controls in `/control`.
 - Hosted o!rdr or local danser-go rendering.
 - Discord slash commands without the privileged Message Content intent.
+- Interactive English `configure.sh` TUI for `.env`, with inline hints, validation, secret masking, and backups.
 - Rotating logs in `logs/stream.log`.
 - Temporary waiting-background upload from `/control`:
   - `static/fallback.svg` is the default.
@@ -35,6 +40,7 @@ Local service for an endless osu!standard replay stream. It accepts `.osr` files
 - [x] Discord `/submit`, `/status`, `/queue`, and `/cancel` commands.
 - [x] Temporary background with automatic reset after restart.
 - [x] Volume control and o!rdr render recovery.
+- [x] Interactive `configure.sh` TUI for safe `.env` configuration.
 - [x] MIT license.
 
 ### WIP / planned
@@ -105,16 +111,21 @@ wsproto==1.3.2
 yarl==1.25.1
 ```
 
-Additional system/runtime dependencies are `bash`, `curl`, `unzip`, SQLite, a modern browser, and OBS Studio. `install-danser.sh` installs danser-go `0.12.1`, verifies its SHA-256 checksum, and installs danser libraries, SDL3, BASS, bundled FFmpeg, `assets.dpak`, `ffmpeg`, and `ffprobe` under `tools/danser/`.
+Additional system/runtime dependencies are `bash`, `curl`, `unzip`, SQLite, a modern browser, and OBS Studio. The `configure.sh` menu also needs `whiptail` or `dialog`. `install-danser.sh` installs danser-go `0.12.1`, verifies its SHA-256 checksum, and installs danser libraries, SDL3, BASS, bundled FFmpeg, `assets.dpak`, `ffmpeg`, and `ffprobe` under `tools/danser/`.
 
 ## Setup and launch
 
 ```bash
 cd /path/to/osu-stream-bot
-cp .env.example .env
+./configure.sh
 ./check.sh
 ./run.sh
 ```
+
+`configure.sh` provides an English interactive terminal menu with hints and
+validation for every `.env` setting. Secrets are masked, and the previous file
+is backed up as the Git-ignored `.env.bak`. You can still create the file
+manually with `cp .env.example .env` if preferred.
 
 For o!rdr, configure `ORDR_API_KEY` and disable developer mode:
 
@@ -181,7 +192,9 @@ Commands: `/submit replay:<file.osr>`, `/status submission_id:<id>`, `/queue`, a
 
 ## Configuration
 
-See `.env.example` for all settings. Main options:
+Run `./configure.sh` to change settings without editing `.env` manually. Use
+`./configure.sh --validate` for a non-interactive validation pass. See
+`.env.example` for all settings. Main options:
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -223,6 +236,8 @@ Other Linux distributions may require additional packages and GPU permissions.
 ## Useful commands
 
 ```bash
+./configure.sh
+./configure.sh --validate
 ./install-danser.sh
 ./run.sh --no-producer
 ./run.sh --recover-render 5094318
@@ -235,5 +250,3 @@ Other Linux distributions may require additional packages and GPU permissions.
 This project is distributed under the [MIT License](LICENSE). You may freely download, use, modify, distribute, sublicense, and include it in other projects, provided that the license and copyright notice are retained.
 
 osu!, o!rdr, danser, Discord, and osuokayu are third-party projects/services with their own terms. Users are responsible for complying with their rules, respecting rights to uploaded images, beatmaps, and replays, and protecting tokens and API keys.
-
-Russian documentation: [`README_RU.md`](README_RU.md).

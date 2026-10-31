@@ -22,6 +22,7 @@
 - Чтение модификаторов из заголовка `.osr` и выбор DT/NC skin для o!rdr.
 - Discord slash-команды для приёма replay без privileged Message Content intent.
 - Защита от повторов, лимиты очереди и cooldown пользователей Discord.
+- Англоязычное TUI `configure.sh` для настройки `.env` с подсказками, проверкой значений, скрытием секретов и резервной копией.
 - Ротация логов в `logs/stream.log`.
 
 ## ROAD MAP
@@ -41,6 +42,7 @@
 - [x] Временная загрузка фона с автоматическим сбросом при рестарте.
 - [x] Настройка громкости из панели.
 - [x] Восстановление завершённых o!rdr render через `--recover-render`.
+- [x] Интерактивное TUI `configure.sh` для безопасной настройки `.env`.
 - [x] MIT-лицензия.
 
 ### WIP / планируется
@@ -120,14 +122,20 @@ wsproto==1.3.2
 yarl==1.25.1
 ```
 
-Системные и runtime-зависимости: `bash`, `curl`, `unzip`, `ffmpeg`, `ffprobe`, SQLite, OpenGL/SDL3, GPU-драйвер с VAAPI (для аппаратного кодирования), современный браузер и OBS Studio. Интернет нужен для o!rdr, osuokayu, beatmap mirror и Discord Gateway. Скрипт `install-danser.sh` устанавливает danser-go `0.12.1`, проверяет SHA-256 и размещает его библиотеки и `assets.dpak` в `tools/danser/`. В локальный danser-пакет входят `libdanser-core.so`, `libSDL3.so`, `libyuv.so`, `libbass.so`, `libbass_fx.so`, `libbassmix.so`, а также bundled FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswscale`, `libswresample`) и бинарники `ffmpeg`/`ffprobe`.
+Системные и runtime-зависимости: `bash`, `curl`, `unzip`, `ffmpeg`, `ffprobe`, SQLite, OpenGL/SDL3, GPU-драйвер с VAAPI (для аппаратного кодирования), современный браузер и OBS Studio. Для меню `configure.sh` нужен `whiptail` или `dialog`. Интернет нужен для o!rdr, osuokayu, beatmap mirror и Discord Gateway. Скрипт `install-danser.sh` устанавливает danser-go `0.12.1`, проверяет SHA-256 и размещает его библиотеки и `assets.dpak` в `tools/danser/`. В локальный danser-пакет входят `libdanser-core.so`, `libSDL3.so`, `libyuv.so`, `libbass.so`, `libbass_fx.so`, `libbassmix.so`, а также bundled FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswscale`, `libswresample`) и бинарники `ffmpeg`/`ffprobe`.
 
 ## Настройка и запуск
 
 ```bash
 cd /path/to/osu-stream-bot
-cp .env.example .env
+./configure.sh
 ```
+
+`configure.sh` открывает англоязычное терминальное меню со всеми параметрами и
+подсказками, проверяет введённые значения и безопасно записывает `.env`.
+API-ключ o!rdr и Discord token в меню скрыты. При сохранении предыдущая версия
+остаётся в игнорируемом Git файле `.env.bak`. Если TUI не нужен, `.env`
+по-прежнему можно создать вручную командой `cp .env.example .env`.
 
 Параметры по умолчанию позволяют проверить веб-интерфейс без реального рендера:
 
@@ -219,7 +227,9 @@ DISCORD_MAX_FILE_MIB=10
 
 ## Конфигурация
 
-Все параметры находятся в `.env.example`. Основные:
+Для изменения настроек без ручного редактирования `.env` запустите
+`./configure.sh`. Неинтерактивная проверка доступна через
+`./configure.sh --validate`. Все параметры находятся в `.env.example`. Основные:
 
 | Переменная | По умолчанию | Назначение |
 |---|---:|---|
@@ -263,6 +273,8 @@ DISCORD_MAX_FILE_MIB=10
 ## Полезные команды
 
 ```bash
+./configure.sh
+./configure.sh --validate
 ./install-danser.sh
 ./run.sh --no-producer
 ./run.sh --recover-render 5094318
