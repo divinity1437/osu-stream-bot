@@ -188,7 +188,7 @@ DISCORD_USER_COOLDOWN_SECONDS=300
 DISCORD_MAX_FILE_MIB=10
 ```
 
-Commands: `/submit replay:<file.osr>`, `/status submission_id:<id>`, `/queue`, and `/cancel submission_id:<id>`. Never commit the bot token.
+Commands: `/submit replay:<file.osr>`, `/status`, `/queue`, and `/cancel submission_id:<id>`. `/status` shows all replays that are waiting, being prepared, or rendering; `/queue` is an alias for the same view. Never commit the bot token.
 
 ## Configuration
 
@@ -224,7 +224,6 @@ Development and smoke testing were performed on:
 - Arch Linux rolling, x86_64.
 - Intel Xeon E5-2643 @ 3.30 GHz, 4 physical cores / 8 threads, 1 socket, up to 3.50 GHz Turbo.
 - 16 GiB RAM installed, approximately 15 GiB available to the OS, and 13 GiB swap.
-- RAM generation could not be determined because SPD/DMI information was unavailable in the environment.
 - Python 3.14.8 in a local `venv`.
 - FFmpeg/ffprobe 9.0.2.
 - AMD Radeon RX 550 (Baffin), VAAPI at `/dev/dri/renderD128`.

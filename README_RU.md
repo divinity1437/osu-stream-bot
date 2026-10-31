@@ -223,7 +223,7 @@ DISCORD_USER_COOLDOWN_SECONDS=300
 DISCORD_MAX_FILE_MIB=10
 ```
 
-Доступные команды: `/submit replay:<file.osr>`, `/status submission_id:<id>`, `/queue`, `/cancel submission_id:<id>`. Токен нельзя коммитить или публиковать.
+Доступные команды: `/submit replay:<file.osr>`, `/status`, `/queue`, `/cancel submission_id:<id>`. `/status` без аргументов показывает все replay, которые ожидают, подготавливаются или рендерятся; `/queue` оставлена как alias того же списка. Токен нельзя коммитить или публиковать.
 
 ## Конфигурация
 
@@ -259,7 +259,6 @@ DISCORD_MAX_FILE_MIB=10
 - Arch Linux rolling, x86_64.
 - CPU: Intel Xeon E5-2643 @ 3.30 GHz, 4 физических ядра / 8 потоков, 1 socket, Turbo до 3.50 GHz.
 - RAM: 16 GiB установлено (около 15 GiB доступно ОС), swap 13 GiB.
-- Тип RAM: определить автоматически не удалось — текущая среда не предоставляет данные SPD/DMI о поколении модулей, поэтому DDR-тип в README не заявляется.
 - Python 3.14.8 в локальном `venv`.
 - FFmpeg/ffprobe 9.0.2.
 - AMD Radeon RX 550 (Baffin, VAAPI `/dev/dri/renderD128`) для danser hardware encoding.

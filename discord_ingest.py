@@ -68,15 +68,18 @@ class DiscordReplayService:
         permissions = getattr(interaction.user, "guild_permissions", None)
         return bool(permissions and permissions.manage_messages)
 
+    def _status_label(self, row: dict[str, Any]) -> str:
+        status = row["status"]
+        if status == "rendering" and self.config.render_backend == "danser":
+            return "Rendering locally with danser"
+        return STATUS_LABELS.get(status, status.title())
+
     async def _embed(self, row: dict[str, Any]) -> discord.Embed:
         status = row["status"]
         position = await self.submissions.queue_position(int(row["id"]))
-        status_label = STATUS_LABELS.get(status, status.title())
-        if status == "rendering" and self.config.render_backend == "danser":
-            status_label = "Rendering locally with danser"
         embed = discord.Embed(
             title=f"Replay submission #{row['id']}",
-            description=status_label,
+            description=self._status_label(row),
             color=STATUS_COLORS.get(status, 0x5865F2),
             timestamp=discord.utils.utcnow(),
         )
@@ -98,6 +101,31 @@ class DiscordReplayService:
             footer = "Submitted replays are rendered locally and may appear publicly on the stream."
         embed.set_footer(text=footer)
         return embed
+
+    async def _send_active_queue(self, interaction: discord.Interaction) -> None:
+        rows = await self.submissions.list_active(21)
+        if not rows:
+            await interaction.response.send_message(
+                "No replays are waiting, preparing, or rendering.",
+                ephemeral=True,
+            )
+            return
+
+        visible_rows = rows[:20]
+        lines = [
+            f"**{index}.** `#{row['id']}` <@{row['external_user_id']}> · "
+            f"**{row['mods_label']}** · {self._status_label(row)}"
+            for index, row in enumerate(visible_rows, start=1)
+        ]
+        embed = discord.Embed(
+            title="Active replay jobs",
+            description="\n".join(lines),
+            color=0x5865F2,
+            timestamp=discord.utils.utcnow(),
+        )
+        if len(rows) > len(visible_rows):
+            embed.set_footer(text="Showing the first 20 active submissions.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @staticmethod
     async def _download_attachment(replay: discord.Attachment, destination: Path) -> None:
@@ -197,35 +225,17 @@ class DiscordReplayService:
             finally:
                 temporary.unlink(missing_ok=True)
 
-        @self.bot.tree.command(name="status", description="Show a replay submission status")
-        @app_commands.describe(submission_id="Submission number")
-        async def status(interaction: discord.Interaction, submission_id: int) -> None:
+        @self.bot.tree.command(name="status", description="Show replays that are waiting, preparing, or rendering")
+        async def status(interaction: discord.Interaction) -> None:
             if await self._reject_wrong_channel(interaction):
                 return
-            row = await self.submissions.get(submission_id)
-            if not row:
-                await interaction.response.send_message("Submission not found.", ephemeral=True)
-                return
-            await interaction.response.send_message(embed=await self._embed(row), ephemeral=True)
+            await self._send_active_queue(interaction)
 
-        @self.bot.tree.command(name="queue", description="Show the current replay submission queue")
+        @self.bot.tree.command(name="queue", description="Show the active replay queue (alias of /status)")
         async def queue(interaction: discord.Interaction) -> None:
             if await self._reject_wrong_channel(interaction):
                 return
-            rows = await self.submissions.list_active(15)
-            if not rows:
-                await interaction.response.send_message("The user replay queue is empty.", ephemeral=True)
-                return
-            lines = []
-            for index, row in enumerate(rows, start=1):
-                status_label = STATUS_LABELS.get(row["status"], row["status"])
-                if row["status"] == "rendering" and self.config.render_backend == "danser":
-                    status_label = "Rendering locally with danser"
-                lines.append(
-                    f"**{index}.** `#{row['id']}` <@{row['external_user_id']}> · **{row['mods_label']}** · {status_label}"
-                )
-            embed = discord.Embed(title="Replay submission queue", description="\n".join(lines), color=0x5865F2)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self._send_active_queue(interaction)
 
         @self.bot.tree.command(name="cancel", description="Cancel your waiting replay submission")
         @app_commands.describe(submission_id="Submission number")
