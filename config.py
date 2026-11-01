@@ -92,6 +92,7 @@ class Config:
     danser_render_timeout: int
     danser_max_map_bytes: int
     controller_url: str = ""
+    render_api_token: str = ""
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Config":
@@ -120,6 +121,7 @@ class Config:
             danser_dir = danser_dir.resolve()
 
         controller_url = os.getenv("CONTROLLER_URL", "").strip()
+        render_api_token = os.getenv("RENDER_API_TOKEN", "").strip()
 
         config = cls(
             root=base_root,
@@ -173,6 +175,7 @@ class Config:
             danser_render_timeout=env_int("DANSER_RENDER_TIMEOUT_SECONDS", 3600),
             danser_max_map_bytes=env_int("DANSER_MAX_MAP_MIB", 300) * 1024 * 1024,
             controller_url=controller_url,
+            render_api_token=render_api_token,
         )
 
         config._validate()

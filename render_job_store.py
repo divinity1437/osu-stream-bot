@@ -93,6 +93,79 @@ class RenderJobStore:
                 self.connection.rollback()
                 raise
 
+    async def get_job(self, job_id: str) -> dict[str, Any] | None:
+        async with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM render_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            return self._dict(row)
+
+    async def complete_job(
+        self,
+        job_id: str,
+        lease_token: str,
+        artifact_path: str | None = None,
+    ) -> bool:
+        now = time.time()
+        final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
+        async with self.lock:
+            try:
+                cursor = self.connection.execute(
+                    f"UPDATE render_jobs SET status = 'completed', artifact_path = COALESCE(?, artifact_path), "
+                    f"lease_token = NULL, lease_expires_at = NULL, updated_at = ? "
+                    f"WHERE id = ? AND lease_token = ? AND status NOT IN ({final_placeholders})",
+                    (artifact_path, now, job_id, lease_token, *FINAL_STATUSES),
+                )
+                self.connection.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.connection.rollback()
+                raise
+
+    async def fail_job(
+        self,
+        job_id: str,
+        lease_token: str,
+        error: str | None = None,
+    ) -> bool:
+        now = time.time()
+        final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
+        async with self.lock:
+            try:
+                cursor = self.connection.execute(
+                    f"UPDATE render_jobs SET status = 'failed', error = ?, "
+                    f"lease_token = NULL, lease_expires_at = NULL, updated_at = ? "
+                    f"WHERE id = ? AND lease_token = ? AND status NOT IN ({final_placeholders})",
+                    (error or "Render job failed", now, job_id, lease_token, *FINAL_STATUSES),
+                )
+                self.connection.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.connection.rollback()
+                raise
+
+    async def update_artifact_path(
+        self,
+        job_id: str,
+        lease_token: str,
+        artifact_path: str,
+    ) -> bool:
+        now = time.time()
+        final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
+        async with self.lock:
+            try:
+                cursor = self.connection.execute(
+                    f"UPDATE render_jobs SET artifact_path = ?, updated_at = ? "
+                    f"WHERE id = ? AND lease_token = ? AND status NOT IN ({final_placeholders})",
+                    (artifact_path, now, job_id, lease_token, *FINAL_STATUSES),
+                )
+                self.connection.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.connection.rollback()
+                raise
+
     async def reconcile_expired_jobs(self) -> int:
         now = time.time()
         async with self.lock:
