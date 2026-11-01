@@ -290,7 +290,20 @@ class DiscordReplayService:
             await asyncio.sleep(3)
 
     async def start(self) -> None:
-        await self.bot.start(self.config.discord_token, reconnect=True)
+        while True:
+            try:
+                await self.bot.start(self.config.discord_token, reconnect=True)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logging.error("Discord bot disconnected: %s; reconnecting in 5s...", error)
+                try:
+                    if not self.bot.is_closed():
+                        await self.bot.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
 
     async def close(self) -> None:
         if self.notification_task:

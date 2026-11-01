@@ -602,8 +602,11 @@ class QueueStore:
             if not video.is_file():
                 return False, False
             was_current = self.state.get("current_video") == safe_name
-            video.unlink(missing_ok=True)
-            video.with_suffix(".json").unlink(missing_ok=True)
+            try:
+                video.unlink(missing_ok=True)
+                video.with_suffix(".json").unlink(missing_ok=True)
+            except OSError as error:
+                logging.warning("Could not immediately remove deleted video file %s: %s", video.name, error)
             self.state["deleted_count"] = int(self.state.get("deleted_count", 0)) + 1
             self.state["last_completion_reason"] = reason
             if was_current:
@@ -619,8 +622,11 @@ class QueueStore:
             if not current:
                 return False, None
             video = self.queue_dir / Path(current).name
-            video.unlink(missing_ok=True)
-            video.with_suffix(".json").unlink(missing_ok=True)
+            try:
+                video.unlink(missing_ok=True)
+                video.with_suffix(".json").unlink(missing_ok=True)
+            except OSError as error:
+                logging.warning("Could not immediately remove skipped video file %s: %s", video.name, error)
             self.state["current_video"] = None
             self.state["skipped_count"] = int(self.state.get("skipped_count", 0)) + 1
             self.state["deleted_count"] = int(self.state.get("deleted_count", 0)) + 1
