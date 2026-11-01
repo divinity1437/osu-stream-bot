@@ -18,15 +18,15 @@ class SubmissionRejected(RuntimeError):
 
 class SubmissionStore:
     def __init__(self, root: Path, queue_limit: int, user_cooldown_seconds: int):
-        self.root = root
+        self.root = root.resolve()
         self.queue_limit = queue_limit
         self.user_cooldown_seconds = user_cooldown_seconds
-        self.base_dir = root / "submissions"
+        self.base_dir = self.root / "submissions"
         self.originals_dir = self.base_dir / "originals"
         self.temp_dir = self.base_dir / "tmp"
         self.originals_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        self.database_path = root / "submissions.db"
+        self.database_path = self.root / "submissions.db"
         self.connection = sqlite3.connect(self.database_path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")
@@ -151,7 +151,7 @@ class SubmissionStore:
                 raise SubmissionRejected("The submission queue is currently full.", "queue-full")
             safe_user = "".join(character for character in external_user_id if character.isdigit()) or "user"
             stored_name = f"{now}-{platform}-{safe_user}-{checksum[:12]}.osr"
-            stored_path = self.originals_dir / stored_name
+            stored_path = (self.originals_dir / stored_name).resolve()
             temporary = stored_path.with_suffix(".osr.part")
             try:
                 source_path.replace(temporary)
