@@ -95,12 +95,36 @@ define_setting "ORDR_MIN_SUBMIT_INTERVAL_SECONDS" "0" "decimal" \
 define_setting "DANSER_DIR" "tools/danser" "text" \
     "danser directory" \
     "Path to the local danser installation. Relative paths are resolved from the project directory."
-define_setting "DANSER_SETTINGS" "stream" "profile" \
+define_setting "DANSER_SETTINGS" "stream-cpu" "profile" \
     "danser settings profile" \
-    "Simple JSON profile name without a path or extension, for example: stream."
-define_setting "DANSER_SKIN" "default" "text" \
+    "Simple JSON profile name without a path or extension. Use stream-cpu for portable libx264 encoding; stream enables VAAPI hardware encoding."
+define_setting "DANSER_SKINS_DIR" "auto" "skin_dir" \
+    "osu! skins directory" \
+    "Use auto to detect common osu!stable/Wine locations, or enter an explicit directory containing skin folders."
+define_setting "DANSER_SKIN" "default" "skin" \
     "danser skin" \
-    "Skin name in the local danser installation."
+    "Fixed local skin. The TUI lists skins from DANSER_SKINS_DIR; default uses danser's built-in skin."
+define_setting "DANSER_RANDOM_SKIN" "false" "bool" \
+    "Random danser skin" \
+    "Select a different detected custom skin for every replay. DANSER_SKIN remains the fallback."
+define_setting "DANSER_USE_SKIN_CURSOR" "true" "bool" \
+    "Use cursor from skin" \
+    "Use the selected osu! skin's cursor and cursor trail instead of danser's built-in cursor."
+define_setting "DANSER_REPLAY_OVERLAY" "true" "bool" \
+    "Replay information overlay" \
+    "Show mod-adjusted star rating, replay username, and replay mods in the rendered video."
+define_setting "DANSER_BACKGROUND_DIM_PERCENT" "95" "integer" \
+    "Gameplay background dim" \
+    "Background darkness during gameplay, from 0 (no dim) to 100 (black)." "0" "100"
+define_setting "DANSER_PARALLAX_ENABLED" "true" "bool" \
+    "Background parallax" \
+    "Move and slightly scale the beatmap background based on cursor movement."
+define_setting "DANSER_PARALLAX_AMOUNT_PERCENT" "10" "integer" \
+    "Parallax amount" \
+    "Background movement and extra scale in percent. danser's recommended default is 10." "0" "100"
+define_setting "DANSER_PARALLAX_SPEED_PERCENT" "50" "integer" \
+    "Parallax response speed" \
+    "How quickly the background follows cursor movement, in percent. danser's recommended default is 50." "0" "100"
 define_setting "DANSER_RENDER_TIMEOUT_SECONDS" "3600" "integer" \
     "danser render timeout" \
     "Maximum local render time for one replay, in seconds." "60" ""
@@ -178,7 +202,9 @@ ORDR_KEYS=(
     ORDR_RENDER_TIMEOUT_SECONDS ORDR_MIN_SUBMIT_INTERVAL_SECONDS
 )
 DANSER_KEYS=(
-    DANSER_DIR DANSER_SETTINGS DANSER_SKIN
+    DANSER_DIR DANSER_SETTINGS DANSER_SKINS_DIR DANSER_SKIN DANSER_RANDOM_SKIN DANSER_USE_SKIN_CURSOR
+    DANSER_REPLAY_OVERLAY DANSER_BACKGROUND_DIM_PERCENT DANSER_PARALLAX_ENABLED
+    DANSER_PARALLAX_AMOUNT_PERCENT DANSER_PARALLAX_SPEED_PERCENT
     DANSER_RENDER_TIMEOUT_SECONDS DANSER_MAX_MAP_MIB
 )
 SOURCE_KEYS=(
@@ -277,6 +303,50 @@ decimal_integer_less() {
     [[ "$left" < "$right" ]]
 }
 
+skin_directory_has_skins() {
+    local directory=$1
+    [[ -d "$directory" ]] || return 1
+    [[ -n "$(find "$directory" -mindepth 2 -maxdepth 2 -type f -iname 'skin.ini' -print -quit 2>/dev/null)" ]]
+}
+
+resolve_skin_directory_value() {
+    local configured=$1
+    local candidate danser_directory
+    if [[ "${configured,,}" == "auto" ]]; then
+        local -a candidates=(
+            "$HOME/.local/share/osu-wine/osu!/Skins"
+            "$HOME/.wine/drive_c/Program Files/osu!/Skins"
+            "$HOME/.wine/drive_c/Program Files (x86)/osu!/Skins"
+            "$HOME/Games/osu!/Skins"
+            "$HOME/osu!/Skins"
+            "$HOME/.osu/Skins"
+            "$HOME/.local/share/osu/Skins"
+            "$HOME/.var/app/sh.ppy.osu/data/osu/Skins"
+        )
+        for candidate in "${candidates[@]}"; do
+            if skin_directory_has_skins "$candidate"; then
+                printf '%s' "$candidate"
+                return 0
+            fi
+        done
+        danser_directory=${VALUES[DANSER_DIR]}
+        if [[ "$danser_directory" == /* ]]; then
+            printf '%s' "$danser_directory/skins"
+        else
+            printf '%s' "$PROJECT_DIR/$danser_directory/skins"
+        fi
+        return 0
+    fi
+
+    candidate=$configured
+    if [[ "$candidate" == "~/"* ]]; then
+        candidate="$HOME/${candidate:2}"
+    elif [[ "$candidate" != /* ]]; then
+        candidate="$PROJECT_DIR/$candidate"
+    fi
+    printf '%s' "$candidate"
+}
+
 validate_value() {
     local key=$1
     local value=$2
@@ -343,6 +413,26 @@ validate_value() {
                 return 1
             fi
             ;;
+        skin_dir)
+            if [[ -z "$value" ]]; then
+                VALIDATION_ERROR="enter auto or a directory path"
+                return 1
+            fi
+            if [[ "${value,,}" != "auto" ]]; then
+                local skin_directory
+                skin_directory=$(resolve_skin_directory_value "$value")
+                if [[ ! -d "$skin_directory" ]]; then
+                    VALIDATION_ERROR="directory does not exist: $skin_directory"
+                    return 1
+                fi
+            fi
+            ;;
+        skin)
+            if [[ -z "$value" || "$value" == *'/'* || "$value" == *'\'* ]]; then
+                VALIDATION_ERROR="enter a skin directory name without / or \\"
+                return 1
+            fi
+            ;;
         text)
             if [[ -z "$value" ]]; then
                 VALIDATION_ERROR="the value must not be empty"
@@ -358,7 +448,7 @@ validate_value() {
 }
 
 validate_all() {
-    local key value danser_dir
+    local key value danser_dir skins_dir skin_count
     VALIDATION_ERRORS=()
     VALIDATION_WARNINGS=()
 
@@ -390,8 +480,17 @@ validate_all() {
     if [[ ${VALUES[RENDER_BACKEND]} == "danser" ]]; then
         danser_dir=${VALUES[DANSER_DIR]}
         [[ "$danser_dir" == /* ]] || danser_dir="$PROJECT_DIR/$danser_dir"
-        if [[ ! -x "$danser_dir/danser-cli" ]]; then
-            VALIDATION_WARNINGS+=("Executable $danser_dir/danser-cli was not found. Run ./install-danser.sh first.")
+        if [[ ! -x "$danser_dir/danser-cli" && ! -f "$danser_dir/danser-cli.exe" ]]; then
+            VALIDATION_WARNINGS+=("Executable $danser_dir/danser-cli (or danser-cli.exe) was not found. Run ./install-danser.sh (or install-danser.bat) first.")
+        fi
+        skins_dir=$(resolve_skin_directory_value "${VALUES[DANSER_SKINS_DIR]}")
+        skin_count=$(find "$skins_dir" -mindepth 2 -maxdepth 2 -type f -iname 'skin.ini' -printf . 2>/dev/null | wc -c)
+        if bool_is_true "${VALUES[DANSER_RANDOM_SKIN]}" && (( skin_count == 0 )); then
+            VALIDATION_WARNINGS+=("Random danser skin is enabled, but no custom skins were found in $skins_dir.")
+        elif [[ ${VALUES[DANSER_SKIN]} != "default" ]]; then
+            if [[ -z "$(find "$skins_dir/${VALUES[DANSER_SKIN]}" -maxdepth 1 -type f -iname 'skin.ini' -print -quit 2>/dev/null)" ]]; then
+                VALIDATION_WARNINGS+=("Configured danser skin ${VALUES[DANSER_SKIN]} was not found in $skins_dir; danser will use default.")
+            fi
         fi
     fi
 
@@ -723,6 +822,99 @@ edit_enum() {
     esac
 }
 
+edit_skin_directory() {
+    local key=$1
+    local choice detected manual_path local_path
+    detected=$(resolve_skin_directory_value "auto")
+    local_path=${VALUES[DANSER_DIR]}
+    local_path="$local_path/skins"
+
+    if ! choice=$(ui_menu "${LABELS[$key]}" \
+        "${HINTS[$key]}\n\nCurrent value: ${VALUES[$key]}\nAuto-detected: $detected" \
+        "auto" "Auto-detect an osu!stable/Wine skins directory" \
+        "local" "Use the local danser skins directory: $local_path" \
+        "manual" "Enter a directory path manually"); then
+        return 0
+    fi
+
+    case "$choice" in
+        auto)
+            VALUES["$key"]="auto"
+            DIRTY=1
+            ;;
+        local)
+            VALUES["$key"]=$local_path
+            DIRTY=1
+            ;;
+        manual)
+            manual_path=${VALUES[$key]}
+            [[ "${manual_path,,}" == "auto" ]] && manual_path=$detected
+            while true; do
+                if ! manual_path=$(ui_input "${LABELS[$key]}" \
+                    "Enter the directory that contains osu! skin folders.\n\nExample: ~/.local/share/osu-wine/osu!/Skins" \
+                    "$manual_path"); then
+                    return 0
+                fi
+                manual_path=$(trim_whitespace "$manual_path")
+                if validate_value "$key" "$manual_path"; then
+                    VALUES["$key"]=$manual_path
+                    DIRTY=1
+                    return 0
+                fi
+                ui_message "Invalid directory" "$VALIDATION_ERROR"
+            done
+            ;;
+    esac
+}
+
+edit_skin() {
+    local key=$1
+    local directory choice index skin manual_skin
+    local -a skins=("default")
+    local -a items=()
+    declare -A seen=([default]=1)
+
+    directory=$(resolve_skin_directory_value "${VALUES[DANSER_SKINS_DIR]}")
+    while IFS= read -r -d '' skin_ini; do
+        skin=$(basename "$(dirname "$skin_ini")")
+        if [[ -z "${seen[$skin]+x}" ]]; then
+            skins+=("$skin")
+            seen["$skin"]=1
+        fi
+    done < <(find "$directory" -mindepth 2 -maxdepth 2 -type f -iname 'skin.ini' -print0 2>/dev/null | sort -z)
+
+    for index in "${!skins[@]}"; do
+        skin=${skins[$index]}
+        if [[ "$skin" == "default" ]]; then
+            items+=("$((index + 1))" "default — built-in danser skin")
+        else
+            items+=("$((index + 1))" "$skin")
+        fi
+    done
+    items+=("M" "Enter a skin name manually")
+
+    if ! choice=$(ui_menu "${LABELS[$key]}" \
+        "Skins directory: $directory\nDetected custom skins: $((${#skins[@]} - 1))\nCurrent value: ${VALUES[$key]}" \
+        "${items[@]}"); then
+        return 0
+    fi
+
+    if [[ "$choice" == "M" ]]; then
+        if manual_skin=$(ui_input "${LABELS[$key]}" "Enter the exact skin directory name." "${VALUES[$key]}"); then
+            manual_skin=$(trim_whitespace "$manual_skin")
+            if validate_value "$key" "$manual_skin"; then
+                VALUES["$key"]=$manual_skin
+                DIRTY=1
+            else
+                ui_message "Invalid skin" "$VALIDATION_ERROR"
+            fi
+        fi
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#skins[@]} )); then
+        VALUES["$key"]=${skins[$((choice - 1))]}
+        DIRTY=1
+    fi
+}
+
 edit_secret() {
     local key=$1
     local choice secret
@@ -783,6 +975,8 @@ edit_setting() {
     case ${TYPES[$key]} in
         bool) edit_bool "$key" ;;
         enum) edit_enum "$key" ;;
+        skin_dir) edit_skin_directory "$key" ;;
+        skin) edit_skin "$key" ;;
         secret) edit_secret "$key" ;;
         *) edit_input "$key" ;;
     esac

@@ -19,6 +19,7 @@
   - После перезапуска она удаляется автоматически, и снова используется `fallback.svg`.
   - Есть кнопка немедленного возврата к `fallback.svg`.
 - Два backend рендера: hosted o!rdr и локальный danser-go.
+- Автодетект локальных osu!-скинов, фиксированный/случайный skin danser и информационный replay-overlay.
 - Чтение модификаторов из заголовка `.osr` и выбор DT/NC skin для o!rdr.
 - Discord slash-команды для приёма replay без privileged Message Content intent.
 - Защита от повторов, лимиты очереди и cooldown пользователей Discord.
@@ -43,6 +44,7 @@
 - [x] Настройка громкости из панели.
 - [x] Восстановление завершённых o!rdr render через `--recover-render`.
 - [x] Интерактивное TUI `configure.sh` для безопасной настройки `.env`.
+- [x] Автодетект/рандомизация локальных skin и настройки визуала/replay-overlay danser.
 - [x] MIT-лицензия.
 
 ### WIP / планируется
@@ -152,18 +154,80 @@ ORDR_DEVELOPER_MODE=false
 ORDR_API_KEY=your_key_here
 ```
 
-Для локального renderer:
+## Локальный рендер danser (Windows и Linux/Unix)
 
+Для локального рендеринга через danser-go:
+
+**Linux / Unix:**
 ```bash
 ./install-danser.sh
 ```
 
+**Windows:**
+```cmd
+install-danser.bat
+```
+
+Настройка в `.env`:
 ```env
 RENDER_BACKEND=danser
 DANSER_DIR=tools/danser
-DANSER_SETTINGS=stream
+DANSER_SETTINGS=stream-cpu
+DANSER_SKINS_DIR=auto
 DANSER_SKIN=default
+DANSER_RANDOM_SKIN=false
+DANSER_USE_SKIN_CURSOR=true
 ```
+
+### Профили настроек danser под разные ОС
+
+- **`stream-cpu` (Рекомендуемый / Универсальный):** Использует программный кодировщик `libx264` (`preset: veryfast`, `CRF: 20`, 1280×720 @ 60 FPS). Работает «из коробки» как на **Windows**, так и на **Linux/Unix**, не требуя специальной настройки проброса аппаратных GPU-драйверов.
+- **`stream` (Аппаратный VAAPI под Linux):** Использует аппаратный кодек `h264_vaapi` через `/dev/dri/renderD128`. Предназначен для Linux при настроенных и стабильных драйверах VAAPI.
+- **Особенность запуска под Windows (Графическая сессия):** На Windows `danser-cli.exe` требует активного рабочего стола пользователя (OpenGL-контекста). При запуске в фоновой службе (Session 0) драйверы видеокарты (включая AMD Radeon / Vega) могут падать с ошибкой инициализации кучи или кодом 43. Запускайте бот через интерактивную задачу Планировщика заданий Windows («При входе пользователя») или обычным запуском `run.bat`.
+
+`DANSER_SKINS_DIR=auto` автоматически находит стандартные папки скинов:
+- **Windows:** `%LOCALAPPDATA%\osu!\Skins`, `C:\osu!\Skins`
+- **Linux/Unix:** `~/.local/share/osu-wine/osu!/Skins`, `~/.wine/drive_c/Program Files/osu!/Skins`, `~/.osu/Skins`, `~/.var/app/sh.ppy.osu/data/osu/Skins`
+
+Для нестандартной папки укажите путь явно. `configure.sh` выводит список всех найденных папок с `skin.ini`. Параметр `DANSER_RANDOM_SKIN=true` включает выбор случайного скина под каждый реплей. `DANSER_USE_SKIN_CURSOR=true` применяет курсор и след курсора из выбранного скина.
+
+Параметр `DANSER_REPLAY_OVERLAY=true` накладывает в видео мод-рейтинг (stars), ник игрока из реплея и активные моды.
+
+Управление фоном в процентах: `DANSER_BACKGROUND_DIM_PERCENT` (95 по умолчанию), `DANSER_PARALLAX_AMOUNT_PERCENT` (10) и `DANSER_PARALLAX_SPEED_PERCENT` (50). `DANSER_PARALLAX_ENABLED` переключает параллакс.
+
+## Настройка прокси для пользователей из РФ (Обход блокировок ТСПУ)
+
+В РФ доступ к API/Gateway Discord, а также к CDN-зеркалам beatmap и реплеев (включая сети Cloudflare) замедляется или блокируется ТСПУ провайдеров (например, сброс соединения после передачи первых ~24 КБ).
+
+Бот полностью поддерживает стандартные переменные окружения прокси `HTTP_PROXY`, `HTTPS_PROXY` и `ALL_PROXY`. Как `aiohttp`, так и `discord.py` прозрачно маршрутизируют сетевые вызовы и WebSocket-шлюз Discord через указанный прокси.
+
+### Как настроить:
+
+В скриптах запуска `run.sh` (Linux) или `run.bat` (Windows), либо в системных переменных окружения задайте адрес прокси:
+
+**Linux / Unix (`run.sh`):**
+```bash
+export HTTP_PROXY="http://127.0.0.1:10809"
+export HTTPS_PROXY="http://127.0.0.1:10809"
+export ALL_PROXY="http://127.0.0.1:10809"
+```
+
+**Windows (`run.bat`):**
+```cmd
+set HTTP_PROXY=http://127.0.0.1:10809
+set HTTPS_PROXY=http://127.0.0.1:10809
+set ALL_PROXY=http://127.0.0.1:10809
+```
+
+### Варианты организации подключения:
+1. **Локальный VPN-клиент на той же машине:** Запустите ваш VPN-клиент (Xray, Mihomo/Clash, Happ, CasperVPN и т.д.) и включите входящий локальный HTTP-прокси (например, порт `10809` или `7890`).
+2. **Прокси-релей по локальной сети (LAN):** Если стрим-бот крутится на отдельном ноутбуке или сервере, прокси можно направить на соседний ПК в домашней сети, где уже запущен рабочий VPN (например, `http://192.168.2.222:10809`).
+3. **Требование к пингу для слэш-команд Discord:** Слэш-команды Discord требуют ответа (ACK) строго в течение 3 секунд, иначе Discord покажет ошибку *«Приложение не отвечает»*. Используйте стабильные ноды с низким пингом.
+
+Параметры фона задаются в процентах: `DANSER_BACKGROUND_DIM_PERCENT` (по
+умолчанию 95), `DANSER_PARALLAX_AMOUNT_PERCENT` (10) и
+`DANSER_PARALLAX_SPEED_PERCENT` (50). Эффект включается через
+`DANSER_PARALLAX_ENABLED`.
 
 Проверка и запуск:
 
@@ -241,6 +305,10 @@ DISCORD_MAX_FILE_MIB=10
 | `MAX_UPLOAD_MIB` | `20` | Лимит `.osr` upload |
 | `MAX_BACKGROUND_MIB` | `20` | Лимит временного фона |
 | `PLAYER_VOLUME` | `20` | Громкость при первом запуске |
+| `DANSER_SKINS_DIR` | `auto` | Автодетект каталога skin osu!stable или явный путь |
+| `DANSER_SKIN` / `DANSER_RANDOM_SKIN` | `default / false` | Фиксированный или случайный локальный skin |
+| `DANSER_REPLAY_OVERLAY` | `true` | Modded SR, ник игрока и моды в локальном рендере |
+| `DANSER_BACKGROUND_DIM_PERCENT` | `95` | Затемнение gameplay-фона локального рендера |
 
 ## Тесты и проверка
 
@@ -252,22 +320,23 @@ DISCORD_MAX_FILE_MIB=10
 
 Она компилирует Python-модули, проверяет обязательные файлы, renderer, `ffprobe` и настройки. Для ручной проверки player используйте `./run.sh --no-producer`, откройте `/control`, загрузите фон, убедитесь, что он виден на `/`, затем перезапустите процесс и проверьте возврат `fallback.svg`.
 
-## Проверенная конфигурация
+## Протестированные аппаратные конфигурации
 
-Разработка и smoke-проверка проводились на:
+Кодовая база, рендерер и сетевой стек всесторонне протестированы на реальном оборудовании под Linux и Windows:
 
-- Arch Linux rolling, x86_64.
-- CPU: Intel Xeon E5-2643 @ 3.30 GHz, 4 физических ядра / 8 потоков, 1 socket, Turbo до 3.50 GHz.
-- RAM: 16 GiB установлено (около 15 GiB доступно ОС), swap 13 GiB.
-- Python 3.14.8 в локальном `venv`.
-- FFmpeg/ffprobe 9.0.2.
-- AMD Radeon RX 550 (Baffin, VAAPI `/dev/dri/renderD128`) для danser hardware encoding.
-- Разрешение рендера: 1280×720, 60 FPS.
-- Python-библиотеки: aiohttp 3.14.5, python-socketio 5.17.1, python-engineio 4.15.1, discord.py 2.7.1 и зависимости из списка выше.
-- danser-go 0.12.1, установленный через `install-danser.sh`.
-- Локальный backend: `RENDER_BACKEND=danser`, аппаратный encoder `h264_vaapi`.
+| Характеристика | ПК на Linux (Основной / Разработка) | Ноутбук на Windows (Выделенный рендерер) |
+|---|---|---|
+| **Операционная система** | Arch Linux (Ядро `7.2.11-zen1-1-zen`, x86_64) | Microsoft Windows 10 Pro (Сборка `19045.6480`, 64-bit) |
+| **Процессор (CPU)** | Intel Xeon E5-2643 @ 3.30 GHz (4 ядра / 8 потоков, Turbo до 3.50 GHz) | AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (4 ядра / 8 потоков, 2.10–3.70 GHz) |
+| **Оперативная память (RAM)** | 16 GiB DDR3 (доступно ОС ~15 GiB, swap 13 GiB) | 12 GiB DDR4 (доступно ОС ~10 GiB) |
+| **Видеокарта (GPU)** | AMD Radeon RX 550 640SP / RX 560/560X (Baffin, 4GB VRAM) | AMD Radeon(TM) Vega 8 Graphics (Встроенная мобильная графика) |
+| **Бэкенд danser** | danser-go `0.12.1` (`stream-cpu` libx264 и `stream` h264_vaapi) | danser-go `0.12.1` (`stream-cpu` libx264, интерактивная сессия) |
+| **Версия Python** | Python 3.14.8 (`venv`) | Python 3.12.6 (`venv`) |
+| **Версия FFmpeg** | FFmpeg 9.0.2 / bundled библиотеки danser | Комплектные бинарники danser (`ffmpeg.exe`, `ffprobe.exe`) |
+| **Сеть и обход блокировок** | Нативное подключение + TUN VPN (`happ-xray`) / SOCKS прокси | Прокси-релей по локальной сети через ПК (`192.168.2.222:10809`) |
+| **Разрешение рендера** | 1280×720 @ 60 FPS, CRF 20 | 1280×720 @ 60 FPS, CRF 20 |
 
-Другие Linux-дистрибутивы могут потребовать установки системных пакетов и настройки прав на GPU.
+Другие дистрибутивы Linux и выпуски Windows также полностью совместимы при наличии Python 3.10+, FFmpeg и драйверов видеокарты с поддержкой OpenGL.
 
 ## Полезные команды
 

@@ -33,7 +33,7 @@ class SubmissionStore:
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.lock = asyncio.Lock()
         self._create_schema()
-        self._recover_interrupted_preparation()
+        self._recover_interrupted_work()
 
     def _create_schema(self) -> None:
         self.connection.executescript(
@@ -71,11 +71,11 @@ class SubmissionStore:
         )
         self.connection.commit()
 
-    def _recover_interrupted_preparation(self) -> None:
+    def _recover_interrupted_work(self) -> None:
         now = int(time.time())
         self.connection.execute(
             "UPDATE submissions SET status = 'queued', updated_at = ?, error = NULL "
-            "WHERE status = 'preparing'",
+            "WHERE status = 'preparing' OR (status = 'rendering' AND render_id IS NULL)",
             (now,),
         )
         self.connection.commit()
@@ -229,14 +229,15 @@ class SubmissionStore:
     async def mark_rendering(self, submission_id: int, render_id: int | None) -> None:
         await self._set_status(submission_id, "rendering", render_id=render_id, error=None)
 
-    async def mark_ready(self, submission_id: int, video_name: str) -> None:
-        await self._set_status(
-            submission_id,
-            "ready",
-            video_name=video_name,
-            completed_at=int(time.time()),
-            error=None,
-        )
+    async def mark_ready(self, submission_id: int, video_name: str, skin: str | None = None) -> None:
+        values: dict[str, Any] = {
+            "video_name": video_name,
+            "completed_at": int(time.time()),
+            "error": None,
+        }
+        if skin:
+            values["skin"] = skin
+        await self._set_status(submission_id, "ready", **values)
 
     async def mark_failed(self, submission_id: int, error: str) -> None:
         await self._set_status(
@@ -250,7 +251,7 @@ class SubmissionStore:
         await self._set_status(submission_id, "queued", error=error[:1000] if error else None)
 
     async def _set_status(self, submission_id: int, status: str, **values: Any) -> None:
-        allowed = {"render_id", "video_name", "error", "completed_at"}
+        allowed = {"render_id", "video_name", "error", "completed_at", "skin"}
         assignments = ["status = ?", "updated_at = ?"]
         parameters: list[Any] = [status, int(time.time())]
         for key, value in values.items():

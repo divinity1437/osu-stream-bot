@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import struct
+import sys
 import time
 import uuid
 from collections import OrderedDict
@@ -100,7 +101,15 @@ class Config:
     danser_songs_dir: Path
     danser_output_dir: Path
     danser_settings: str
+    danser_skins_dir: str
     danser_skin: str
+    danser_random_skin: bool
+    danser_use_skin_cursor: bool
+    danser_replay_overlay: bool
+    danser_background_dim_percent: int
+    danser_parallax_enabled: bool
+    danser_parallax_amount_percent: int
+    danser_parallax_speed_percent: int
     danser_render_timeout: int
     danser_max_map_bytes: int
 
@@ -154,11 +163,21 @@ class Config:
             discord_user_cooldown_seconds=env_int("DISCORD_USER_COOLDOWN_SECONDS", 300),
             discord_max_file_bytes=env_int("DISCORD_MAX_FILE_MIB", 10) * 1024 * 1024,
             danser_dir=danser_dir,
-            danser_executable=danser_dir / "danser-cli",
+            danser_executable=(
+                danser_dir / ("danser-cli.exe" if sys.platform.startswith("win") else "danser-cli")
+            ),
             danser_songs_dir=danser_dir / "songs",
             danser_output_dir=danser_dir / "videos",
-            danser_settings=os.getenv("DANSER_SETTINGS", "stream").strip(),
+            danser_settings=os.getenv("DANSER_SETTINGS", "stream-cpu").strip(),
+            danser_skins_dir=os.getenv("DANSER_SKINS_DIR", "auto").strip(),
             danser_skin=os.getenv("DANSER_SKIN", "default").strip(),
+            danser_random_skin=env_bool("DANSER_RANDOM_SKIN", False),
+            danser_use_skin_cursor=env_bool("DANSER_USE_SKIN_CURSOR", True),
+            danser_replay_overlay=env_bool("DANSER_REPLAY_OVERLAY", True),
+            danser_background_dim_percent=env_int("DANSER_BACKGROUND_DIM_PERCENT", 95),
+            danser_parallax_enabled=env_bool("DANSER_PARALLAX_ENABLED", True),
+            danser_parallax_amount_percent=env_int("DANSER_PARALLAX_AMOUNT_PERCENT", 10),
+            danser_parallax_speed_percent=env_int("DANSER_PARALLAX_SPEED_PERCENT", 50),
             danser_render_timeout=env_int("DANSER_RENDER_TIMEOUT_SECONDS", 3600),
             danser_max_map_bytes=env_int("DANSER_MAX_MAP_MIB", 300) * 1024 * 1024,
         )
@@ -182,6 +201,16 @@ class Config:
             raise ValueError("DISCORD_QUEUE_LIMIT must be at least 1")
         if not config.danser_settings or "/" in config.danser_settings or "\\" in config.danser_settings:
             raise ValueError("DANSER_SETTINGS must be a simple settings profile name")
+        if not config.danser_skins_dir:
+            raise ValueError("DANSER_SKINS_DIR must be 'auto' or a directory path")
+        if not config.danser_skin or "/" in config.danser_skin or "\\" in config.danser_skin:
+            raise ValueError("DANSER_SKIN must be a simple skin directory name")
+        if not 0 <= config.danser_background_dim_percent <= 100:
+            raise ValueError("DANSER_BACKGROUND_DIM_PERCENT must be between 0 and 100")
+        if not 0 <= config.danser_parallax_amount_percent <= 100:
+            raise ValueError("DANSER_PARALLAX_AMOUNT_PERCENT must be between 0 and 100")
+        if not 0 <= config.danser_parallax_speed_percent <= 100:
+            raise ValueError("DANSER_PARALLAX_SPEED_PERCENT must be between 0 and 100")
         if config.danser_render_timeout < 60:
             raise ValueError("DANSER_RENDER_TIMEOUT_SECONDS must be at least 60")
         if config.danser_max_map_bytes < 10 * 1024 * 1024:
@@ -517,7 +546,7 @@ class QueueStore:
                 self.state["playback_revision"] = int(self.state.get("playback_revision", 0)) + 1
                 self._save()
             metadata = self._metadata_for(current_path)
-            label = metadata.get("description") or metadata.get("label") or current_path.name
+            label = metadata.get("label") or metadata.get("description") or current_path.name
             return {
                 "name": current_path.name,
                 "label": label,
@@ -609,7 +638,7 @@ class QueueStore:
                 items.append(
                     {
                         "name": video.name,
-                        "label": metadata.get("description") or metadata.get("label") or video.name,
+                        "label": metadata.get("label") or metadata.get("description") or video.name,
                         "current": video.name == current,
                         "score_id": metadata.get("score_id"),
                         "render_id": metadata.get("render_id"),
@@ -676,6 +705,7 @@ class ReplaySource:
         self.session = session
         self.submissions = submissions
         self.score_pool: list[int] = []
+        self.score_total: int | None = None
         self.discovered_max_id = config.score_id_max
 
     async def _take_submission(self) -> ReplayCandidate | None:
@@ -775,21 +805,49 @@ class ReplaySource:
             return await response.json(content_type=None)
 
     async def _refill_score_pool(self) -> None:
-        page_size = 100
-        first = await self._scores_page(1, page_size)
-        first_ids = self._score_ids(first)
-        if first_ids:
-            self.discovered_max_id = max(self.discovered_max_id, max(first_ids))
-        total = self._total_scores(first)
-        payload = first
-        if total and total > page_size:
-            page = random.randint(1, max(1, (total + page_size - 1) // page_size))
-            if page != 1:
-                payload = await self._scores_page(page, page_size)
-        ids = self._score_ids(payload) or first_ids
-        random.shuffle(ids)
-        self.score_pool.extend(score_id for score_id in ids if not self.store.is_score_used(score_id))
-        logging.info("Loaded %d score IDs from osuokayu", len(ids))
+        page_size = 1
+        first: Any = None
+        first_ids: list[int] = []
+        if self.score_total is None:
+            first = await self._scores_page(1, page_size)
+            first_ids = self._score_ids(first)
+            if first_ids:
+                self.discovered_max_id = max(self.discovered_max_id, max(first_ids))
+            self.score_total = self._total_scores(first)
+
+        if self.score_total:
+            for _ in range(10):
+                page = random.SystemRandom().randint(1, self.score_total)
+                payload = first if page == 1 and first is not None else await self._scores_page(page, page_size)
+                ids = self._score_ids(payload)
+                if ids:
+                    self.discovered_max_id = max(self.discovered_max_id, max(ids))
+                candidates = [
+                    score_id
+                    for score_id in ids
+                    if score_id >= self.config.score_id_min
+                    and (not self.config.score_id_max or score_id <= self.config.score_id_max)
+                    and not self.store.is_score_used(score_id)
+                ]
+                if candidates:
+                    self.score_pool.append(random.SystemRandom().choice(candidates))
+                    logging.info(
+                        "Sampled a random osuokayu score from record %d/%d",
+                        page,
+                        self.score_total,
+                    )
+                    return
+
+        fallback_ids = [
+            score_id
+            for score_id in first_ids
+            if score_id >= self.config.score_id_min
+            and (not self.config.score_id_max or score_id <= self.config.score_id_max)
+            and not self.store.is_score_used(score_id)
+        ]
+        random.SystemRandom().shuffle(fallback_ids)
+        self.score_pool.extend(fallback_ids)
+        logging.info("Loaded %d fallback score IDs from osuokayu", len(fallback_ids))
 
     async def _download_replay(self, score_id: int) -> Path | None:
         timeout = aiohttp.ClientTimeout(total=45)
@@ -805,8 +863,9 @@ class ReplaySource:
                     return None
                 body = await response.read()
                 content_type = response.headers.get("Content-Type", "").lower()
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as error:
+            logging.warning("Could not download replay %d: %s", score_id, error)
+            return None
         if len(body) < 32 or "json" in content_type or body.lstrip().startswith((b"{", b"[")):
             return None
         destination = self.store.work_dir / f"score-{score_id}-{uuid.uuid4().hex[:8]}.osr"
@@ -821,19 +880,15 @@ class ReplaySource:
         if manual:
             logging.info("Using manually supplied replay: %s", manual.original_name)
             return manual
-        if not self.score_pool:
-            try:
-                await self._refill_score_pool()
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
-                detail = str(error) or type(error).__name__
-                logging.warning("Could not query the score list: %s", detail)
         seen: set[int] = set()
         for attempt in range(self.config.replay_attempts):
-            if not self.score_pool and attempt > 0 and attempt % 25 == 0:
+            if not self.score_pool:
                 try:
                     await self._refill_score_pool()
-                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
-                    pass
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+                    if attempt == 0:
+                        detail = str(error) or type(error).__name__
+                        logging.warning("Could not query the score list: %s", detail)
             if self.score_pool:
                 score_id = self.score_pool.pop()
             else:
@@ -1288,6 +1343,18 @@ class Producer:
                         "mods_value": candidate.mods,
                         "skin": result.skin,
                         "description": result.description,
+                        "player": result.player_name,
+                        "stars": result.star_rating,
+                        "label": " • ".join(
+                            part
+                            for part in (
+                                result.description,
+                                f"{result.star_rating:.2f}★" if result.star_rating is not None else "",
+                                result.player_name,
+                                candidate.mods_label,
+                            )
+                            if part
+                        ),
                         "duration": result.duration,
                         "queued_at": int(time.time()),
                     }
@@ -1330,7 +1397,11 @@ class Producer:
                     }
                 queued = await self.store.enqueue(temporary_video, metadata)
                 if candidate.submission_id is not None:
-                    await self.submissions.mark_ready(candidate.submission_id, queued.name)
+                    await self.submissions.mark_ready(
+                        candidate.submission_id,
+                        queued.name,
+                        str(metadata.get("skin") or "") or None,
+                    )
                 candidate.path.unlink(missing_ok=True)
                 candidate = None
                 self.runtime.phase = f"queued {queued.name}"
@@ -1358,8 +1429,8 @@ class Producer:
                 delay = 60 if error.code in {36, 40, 41} or error.status == 429 else 15
                 await asyncio.sleep(delay)
             except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, RuntimeError, OSError) as error:
-                message = str(error)
-                logging.error("Producer error: %s", message)
+                message = str(error) or type(error).__name__
+                logging.exception("Producer error: %s", message)
                 self.runtime.last_error = message
                 self.runtime.phase = "waiting after an error"
                 if candidate:
@@ -1592,6 +1663,7 @@ async def run(config: Config, no_producer: bool) -> None:
     session = aiohttp.ClientSession(
         timeout=timeout,
         connector=connector,
+        trust_env=True,
         headers={"User-Agent": "osuokayu-replay-stream/1.0"},
     )
     source = ReplaySource(config, store, session, submissions)
@@ -1639,7 +1711,7 @@ async def run(config: Config, no_producer: bool) -> None:
             mode, mods = parse_replay_header(path)
             mods_label = format_mods(mods)
             if config.render_backend == "danser":
-                skin = config.danser_skin
+                skin = "random" if config.danser_random_skin else config.danser_skin
             else:
                 skin = config.dt_skin if replay_has_double_time(mods) else config.skin
             return mode, mods, mods_label, skin

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import time
@@ -19,10 +20,138 @@ import aiohttp
 
 REPLAY_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
 PROGRESS_RE = re.compile(r"Progress:\s*(\d+)%", re.IGNORECASE)
+STAR_TOTAL_RE = re.compile(r"\bTotal:\s*([0-9]+(?:\.[0-9]+)?)")
+REPLAY_OVERLAY_TEMPLATE = (
+    "{{formatF 2 .stars}}★  •  {{.name}}  •  "
+    "{{if .modsA}}{{.modsA}}{{else}}NM{{end}}"
+)
 
 
 class DanserError(RuntimeError):
     pass
+
+
+def discover_danser_skins(directory: Path) -> list[str]:
+    """Return valid osu!stable skin directory names in display order."""
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        return []
+
+    skins: list[str] = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        try:
+            has_skin_ini = any(item.is_file() and item.name.lower() == "skin.ini" for item in child.iterdir())
+        except OSError:
+            continue
+        if has_skin_ini:
+            skins.append(child.name)
+    return sorted(skins, key=str.casefold)
+
+
+def resolve_danser_skins_dir(config: Any) -> Path:
+    configured = os.path.expandvars(config.danser_skins_dir).strip()
+    if configured.lower() != "auto":
+        directory = Path(configured).expanduser()
+        if not directory.is_absolute():
+            directory = config.root / directory
+        directory = directory.resolve()
+        if not directory.is_dir():
+            raise DanserError(f"Configured osu! skins directory does not exist: {directory}")
+        return directory
+
+    home = Path.home()
+    candidates = [
+        home / ".local/share/osu-wine/osu!/Skins",
+        home / ".wine/drive_c/Program Files/osu!/Skins",
+        home / ".wine/drive_c/Program Files (x86)/osu!/Skins",
+        home / "Games/osu!/Skins",
+        home / "osu!/Skins",
+        home / ".osu/Skins",
+        home / ".local/share/osu/Skins",
+        home / ".var/app/sh.ppy.osu/data/osu/Skins",
+    ]
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        candidates.insert(0, Path(local_app_data) / "osu!" / "Skins")
+    candidates.append(Path("C:/osu!/Skins"))
+    for directory in candidates:
+        if directory.is_dir() and discover_danser_skins(directory):
+            return directory.resolve()
+
+    local_directory = config.danser_dir / "skins"
+    local_directory.mkdir(parents=True, exist_ok=True)
+    return local_directory.resolve()
+
+
+def configure_danser_profile(config: Any, skins_directory: Path) -> Path:
+    """Apply environment-controlled visual settings to the selected danser profile."""
+    path = config.danser_dir / "settings" / f"{config.danser_settings}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise DanserError(f"danser settings profile is missing: {path}") from error
+    except (json.JSONDecodeError, OSError) as error:
+        raise DanserError(f"Could not read danser settings profile {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise DanserError(f"danser settings profile must contain a JSON object: {path}")
+
+    def object_section(parent: dict[str, Any], key: str) -> dict[str, Any]:
+        section = parent.setdefault(key, {})
+        if not isinstance(section, dict):
+            raise DanserError(f"danser settings profile has an invalid {key} section: {path}")
+        return section
+
+    general = object_section(payload, "General")
+    skin_settings = object_section(payload, "Skin")
+    skin_cursor = object_section(skin_settings, "Cursor")
+    gameplay = object_section(payload, "Gameplay")
+    playfield = object_section(payload, "Playfield")
+    background = object_section(playfield, "Background")
+    dim = object_section(background, "Dim")
+    parallax = object_section(background, "Parallax")
+
+    general["OsuSkinsDir"] = str(skins_directory)
+    skin_cursor["UseSkinCursor"] = config.danser_use_skin_cursor
+    dim["Normal"] = config.danser_background_dim_percent / 100
+    parallax["Enabled"] = config.danser_parallax_enabled
+    parallax["Amount"] = config.danser_parallax_amount_percent / 100
+    parallax["Speed"] = config.danser_parallax_speed_percent / 100
+
+    statistics = gameplay.get("Statistics")
+    if not isinstance(statistics, list):
+        statistics = []
+    statistics = [
+        item
+        for item in statistics
+        if not isinstance(item, dict) or item.get("Template") != REPLAY_OVERLAY_TEMPLATE
+    ]
+    if config.danser_replay_overlay:
+        statistics.append(
+            {
+                "Show": True,
+                "Template": REPLAY_OVERLAY_TEMPLATE,
+                "XPosition": 0,
+                "YPosition": 16,
+                "Align": "Top",
+                "Anchor": "Top",
+                "Size": 24,
+                "Opacity": 1,
+                "Color": {"Hue": 0, "Saturation": 0, "Value": 1},
+            }
+        )
+    gameplay["Statistics"] = statistics
+
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise DanserError(f"Could not update danser settings profile {path}: {error}") from error
+    return path
 
 
 @dataclass(frozen=True)
@@ -48,6 +177,8 @@ class DanserResult:
     path: Path
     duration: float
     description: str
+    player_name: str
+    star_rating: float | None
     skin: str
     beatmap_set_id: int | None
     beatmap_id: int | None
@@ -94,6 +225,17 @@ def replay_beatmap_checksum(path: Path) -> str:
     if not REPLAY_HASH_RE.fullmatch(checksum):
         raise DanserError("Replay does not contain a valid beatmap MD5 checksum")
     return checksum
+
+
+def replay_player_name(path: Path) -> str:
+    try:
+        with path.open("rb") as replay:
+            if len(replay.read(5)) != 5:
+                raise DanserError("Replay header is truncated")
+            _read_osu_string(replay)
+            return _read_osu_string(replay).strip()
+    except OSError as error:
+        raise DanserError(f"Could not read replay: {error}") from error
 
 
 def _file_md5(path: Path) -> str:
@@ -442,6 +584,41 @@ class DanserRenderer:
         self.library = BeatmapLibrary(config, session, runtime)
         self.log_path = config.root / "logs" / "danser.log"
         self.log_path.parent.mkdir(exist_ok=True)
+        self.skins_directory = resolve_danser_skins_dir(config)
+        self.settings_path = configure_danser_profile(config, self.skins_directory)
+        self.last_skin: str | None = None
+        available_skins = discover_danser_skins(self.skins_directory)
+        logging.info(
+            "danser skins: %s (%d custom skin%s found)",
+            self.skins_directory,
+            len(available_skins),
+            "" if len(available_skins) == 1 else "s",
+        )
+        logging.info(
+            "danser visuals: dim=%d%%, parallax=%s (%d%%/%d%%), replay overlay=%s",
+            config.danser_background_dim_percent,
+            "on" if config.danser_parallax_enabled else "off",
+            config.danser_parallax_amount_percent,
+            config.danser_parallax_speed_percent,
+            "on" if config.danser_replay_overlay else "off",
+        )
+
+    def _select_skin(self) -> str:
+        available = discover_danser_skins(self.skins_directory)
+        if self.config.danser_random_skin and available:
+            candidates = [skin for skin in available if skin != self.last_skin] or available
+            selected = secrets.choice(candidates)
+        elif self.config.danser_skin == "default" or self.config.danser_skin in available:
+            selected = self.config.danser_skin
+        else:
+            logging.warning(
+                "Configured danser skin %r was not found in %s; using default",
+                self.config.danser_skin,
+                self.skins_directory,
+            )
+            selected = "default"
+        self.last_skin = selected
+        return selected
 
     async def prepare(self, candidate: Any) -> BeatmapInfo:
         checksum = replay_beatmap_checksum(candidate.path)
@@ -452,6 +629,12 @@ class DanserRenderer:
         output_name = f"stream-{int(time.time())}-{uuid.uuid4().hex[:10]}"
         output_path = self.config.danser_output_dir / f"{output_name}.mp4"
         temporary_dir = self.config.danser_output_dir / f"{output_name}_temp"
+        selected_skin = self._select_skin()
+        try:
+            player_name = replay_player_name(candidate.path)
+        except DanserError as error:
+            logging.warning("Could not read replay player name from %s: %s", candidate.path.name, error)
+            player_name = ""
         output_path.unlink(missing_ok=True)
         shutil.rmtree(temporary_dir, ignore_errors=True)
         command = (
@@ -459,7 +642,7 @@ class DanserRenderer:
             f"-settings={self.config.danser_settings}",
             f"-replay={candidate.path.resolve()}",
             f"-out={output_name}",
-            f"-skin={self.config.danser_skin}",
+            f"-skin={selected_skin}",
             "-nodbcheck",
             "-noupdatecheck",
             "-preciseprogress",
@@ -467,7 +650,7 @@ class DanserRenderer:
         )
         self.runtime.phase = "rendering locally with danser"
         self.runtime.render_progress = "Starting local renderer"
-        logging.info("Starting local danser render for %s", beatmap.description)
+        logging.info("Starting local danser render for %s (skin: %s)", beatmap.description, selected_skin)
         env = os.environ.copy()
         library_path = str(self.config.danser_dir)
         if env.get("LD_LIBRARY_PATH"):
@@ -486,9 +669,12 @@ class DanserRenderer:
             raise DanserError(f"Could not start danser: {error}") from error
 
         tail: deque[str] = deque(maxlen=40)
+        star_rating: float | None = None
 
         async def consume_output() -> None:
+            nonlocal star_rating
             assert process.stdout is not None
+            reading_stars = False
             with self.log_path.open("a", encoding="utf-8") as log_file:
                 log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {beatmap.description} =====\n")
                 while raw_line := await process.stdout.readline():
@@ -497,6 +683,13 @@ class DanserRenderer:
                     log_file.flush()
                     if line:
                         tail.append(line)
+                    if line.rstrip().endswith("Stars:"):
+                        reading_stars = True
+                    elif reading_stars:
+                        star_match = STAR_TOTAL_RE.search(line)
+                        if star_match:
+                            star_rating = float(star_match.group(1))
+                            reading_stars = False
                     match = PROGRESS_RE.search(line)
                     if match:
                         progress = int(match.group(1))
@@ -549,7 +742,9 @@ class DanserRenderer:
             path=output_path,
             duration=duration,
             description=beatmap.description,
-            skin=self.config.danser_skin,
+            player_name=player_name,
+            star_rating=star_rating,
+            skin=selected_skin,
             beatmap_set_id=beatmap.set_id,
             beatmap_id=beatmap.beatmap_id,
         )

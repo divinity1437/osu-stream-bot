@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -43,7 +44,17 @@ class DiscordReplayService:
         self.validate_replay = validate_replay
         intents = discord.Intents.none()
         intents.guilds = True
-        self.bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
+        proxy = (
+            os.getenv("HTTPS_PROXY")
+            or os.getenv("HTTP_PROXY")
+            or os.getenv("ALL_PROXY")
+            or None
+        )
+        self.bot = commands.Bot(
+            command_prefix=commands.when_mentioned,
+            intents=intents,
+            proxy=proxy,
+        )
         self.task: asyncio.Task[Any] | None = None
         self.notification_task: asyncio.Task[Any] | None = None
         self.synced = False
