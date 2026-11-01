@@ -36,5 +36,6 @@ if not exist "%DANSER_DIR%\videos" mkdir "%DANSER_DIR%\videos"
 
 copy /Y danser-stream.json "%DANSER_DIR%\settings\stream.json" >nul
 copy /Y danser-stream-cpu.json "%DANSER_DIR%\settings\stream-cpu.json" >nul
+copy /Y danser-stream-amf.json "%DANSER_DIR%\settings\stream-amf.json" >nul
 
 echo danser %VERSION% successfully installed in %DANSER_DIR%!

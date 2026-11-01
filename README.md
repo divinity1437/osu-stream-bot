@@ -165,6 +165,7 @@ DANSER_USE_SKIN_CURSOR=true
 ### danser Settings and Platform Profiles
 
 - **`stream-cpu` (Recommended / Universal):** Uses software `libx264` (`preset: veryfast`, `CRF: 20`, 1280x720 @ 60 FPS). Works out of the box on both **Windows** and **Linux/Unix** without requiring GPU hardware encoder setup.
+- **`stream-amf` (Windows AMD Hardware Acceleration):** Uses AMD AMF `h264_amf` (`usage: transcoding`, `quality: speed`, `profile: high`, `rate control: cbr 10M`, 1280x720 @ 60 FPS). Fully supported by danser's bundled Windows FFmpeg for AMD Radeon and integrated Vega graphics (e.g. Vega 8 on Ryzen APUs), significantly speeding up renders and offloading the CPU.
 - **`stream` (Linux hardware VAAPI):** Uses `h264_vaapi` with `/dev/dri/renderD128`. Intended for Linux machines with properly configured VAAPI drivers.
 - **Windows Graphics/Driver Note:** When running on Windows, ensure the bot runs in an active interactive user desktop session (e.g., via Task Scheduler on logon or `run.bat`). Headless background sessions (Session 0) lack an active display context and may cause OpenGL/driver initialization errors (e.g. heap corruption or driver code 43) in `danser-cli.exe`.
 
@@ -290,11 +291,12 @@ Extensive development, load testing, and verification were performed on real-wor
 | **CPU** | Intel Xeon E5-2643 @ 3.30 GHz (4 cores / 8 threads, Turbo 3.50 GHz) | AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (4 cores / 8 threads, 2.10–3.70 GHz) |
 | **RAM** | 16 GiB DDR3 (15 GiB available to OS, 13 GiB swap) | 12 GiB DDR4 (10 GiB available to OS) |
 | **GPU / Graphics** | AMD Radeon RX 550 640SP / RX 560/560X (Baffin, 4GB VRAM) | AMD Radeon(TM) Vega 8 Graphics (Integrated Mobile GPU) |
-| **danser Backend** | danser-go `0.12.1` (`stream-cpu` libx264 & `stream` h264_vaapi) | danser-go `0.12.1` (`stream-cpu` libx264, interactive user session) |
+| **danser Backend** | danser-go `0.12.1` (`stream-cpu` libx264 & `stream` h264_vaapi) | danser-go `0.12.1` (`stream-amf` h264_amf Vega 8 & `stream-cpu` libx264, interactive session) |
 | **Python Version** | Python 3.14.8 (`venv`) | Python 3.12.6 (`venv`) |
-| **FFmpeg Version** | FFmpeg 9.0.2 / bundled danser FFmpeg libraries | Bundled danser FFmpeg binaries (`ffmpeg.exe`, `ffprobe.exe`) |
+| **FFmpeg Version** | FFmpeg 9.0.2 / bundled danser FFmpeg libraries | Bundled danser FFmpeg binaries (`ffmpeg.exe`, `ffprobe.exe` with AMF support) |
 | **Network & Relay** | Native connection + TUN VPN (`happ-xray`) / SOCKS proxy provider | SOCKS5/HTTP Proxy Relay via LAN (`192.168.2.222:10809`) |
-| **Tested Render Resolution** | 1280x720 @ 60 FPS, CRF 20 | 1280x720 @ 60 FPS, CRF 20 |
+| **Tested Render Resolution** | 1280x720 @ 60 FPS, CRF 20 | 1280x720 @ 60 FPS (`stream-amf` 10M CBR / `stream-cpu` CRF 20) |
+| **Rendering Performance** | Real-time / ~1.8x–3.2x render speed | **Vega 8 AMF**: ~42.9s for full map (~1.3x–3.6x speed, low CPU overhead) |
 
 Other Linux distributions and Windows versions are fully compatible, provided requirements (Python 3.10+, FFmpeg, and OpenGL-capable drivers) are met.
 

@@ -182,6 +182,7 @@ DANSER_USE_SKIN_CURSOR=true
 ### Профили настроек danser под разные ОС
 
 - **`stream-cpu` (Рекомендуемый / Универсальный):** Использует программный кодировщик `libx264` (`preset: veryfast`, `CRF: 20`, 1280×720 @ 60 FPS). Работает «из коробки» как на **Windows**, так и на **Linux/Unix**, не требуя специальной настройки проброса аппаратных GPU-драйверов.
+- **`stream-amf` (Аппаратное ускорение AMD под Windows):** Использует аппаратный кодировщик AMD AMF `h264_amf` (`usage: transcoding`, `quality: speed`, `profile: high`, `rate control: cbr 10M`, 1280×720 @ 60 FPS). Встроенный в danser для Windows FFmpeg нативно поддерживает AMF для видеокарт AMD Radeon и встроенной графики Vega (включая Vega 8 на процессорах AMD Ryzen). Это многократно снижает нагрузку на центральный процессор и ускоряет рендеринг.
 - **`stream` (Аппаратный VAAPI под Linux):** Использует аппаратный кодек `h264_vaapi` через `/dev/dri/renderD128`. Предназначен для Linux при настроенных и стабильных драйверах VAAPI.
 - **Особенность запуска под Windows (Графическая сессия):** На Windows `danser-cli.exe` требует активного рабочего стола пользователя (OpenGL-контекста). При запуске в фоновой службе (Session 0) драйверы видеокарты (включая AMD Radeon / Vega) могут падать с ошибкой инициализации кучи или кодом 43. Запускайте бот через интерактивную задачу Планировщика заданий Windows («При входе пользователя») или обычным запуском `run.bat`.
 
@@ -330,11 +331,12 @@ DISCORD_MAX_FILE_MIB=10
 | **Процессор (CPU)** | Intel Xeon E5-2643 @ 3.30 GHz (4 ядра / 8 потоков, Turbo до 3.50 GHz) | AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (4 ядра / 8 потоков, 2.10–3.70 GHz) |
 | **Оперативная память (RAM)** | 16 GiB DDR3 (доступно ОС ~15 GiB, swap 13 GiB) | 12 GiB DDR4 (доступно ОС ~10 GiB) |
 | **Видеокарта (GPU)** | AMD Radeon RX 550 640SP / RX 560/560X (Baffin, 4GB VRAM) | AMD Radeon(TM) Vega 8 Graphics (Встроенная мобильная графика) |
-| **Бэкенд danser** | danser-go `0.12.1` (`stream-cpu` libx264 и `stream` h264_vaapi) | danser-go `0.12.1` (`stream-cpu` libx264, интерактивная сессия) |
+| **Бэкенд danser** | danser-go `0.12.1` (`stream-cpu` libx264 и `stream` h264_vaapi) | danser-go `0.12.1` (`stream-amf` h264_amf Vega 8 и `stream-cpu` libx264, интерактивная сессия) |
 | **Версия Python** | Python 3.14.8 (`venv`) | Python 3.12.6 (`venv`) |
-| **Версия FFmpeg** | FFmpeg 9.0.2 / bundled библиотеки danser | Комплектные бинарники danser (`ffmpeg.exe`, `ffprobe.exe`) |
+| **Версия FFmpeg** | FFmpeg 9.0.2 / bundled библиотеки danser | Комплектные бинарники danser (`ffmpeg.exe`, `ffprobe.exe` с поддержкой AMF) |
 | **Сеть и обход блокировок** | Нативное подключение + TUN VPN (`happ-xray`) / SOCKS прокси | Прокси-релей по локальной сети через ПК (`192.168.2.222:10809`) |
-| **Разрешение рендера** | 1280×720 @ 60 FPS, CRF 20 | 1280×720 @ 60 FPS, CRF 20 |
+| **Разрешение рендера** | 1280×720 @ 60 FPS, CRF 20 | 1280×720 @ 60 FPS (`stream-amf` 10M CBR / `stream-cpu` CRF 20) |
+| **Производительность рендера** | В реальном времени / ~1.8x–3.2x скорость | **Vega 8 AMF**: ~42.9 с на полную карту (~1.3x–3.6x скорость, минимум CPU) |
 
 Другие дистрибутивы Linux и выпуски Windows также полностью совместимы при наличии Python 3.10+, FFmpeg и драйверов видеокарты с поддержкой OpenGL.
 

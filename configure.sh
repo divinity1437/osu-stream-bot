@@ -97,7 +97,7 @@ define_setting "DANSER_DIR" "tools/danser" "text" \
     "Path to the local danser installation. Relative paths are resolved from the project directory."
 define_setting "DANSER_SETTINGS" "stream-cpu" "profile" \
     "danser settings profile" \
-    "Simple JSON profile name without a path or extension. Use stream-cpu for portable libx264 encoding; stream enables VAAPI hardware encoding."
+    "Simple JSON profile name without a path or extension. Use stream-cpu for portable libx264 encoding; stream enables VAAPI hardware encoding on Linux; stream-amf enables AMD AMF hardware encoding on Windows (Vega/Radeon)."
 define_setting "DANSER_SKINS_DIR" "auto" "skin_dir" \
     "osu! skins directory" \
     "Use auto to detect common osu!stable/Wine locations, or enter an explicit directory containing skin folders."
