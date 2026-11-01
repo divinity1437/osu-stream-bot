@@ -48,7 +48,7 @@ class RenderJobStore:
     def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
-    async def claim_job(self, worker_id: str, lease_seconds: float) -> dict[str, Any] | None:
+    async def claim_job(self, worker_id: str, lease_seconds: float = 60.0) -> dict[str, Any] | None:
         async with self.lock:
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -77,7 +77,7 @@ class RenderJobStore:
                 self.connection.rollback()
                 raise
 
-    async def heartbeat(self, job_id: str, lease_token: str, lease_seconds: float) -> bool:
+    async def heartbeat(self, job_id: str, lease_token: str, lease_seconds: float = 60.0) -> bool:
         now = time.time()
         final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
         async with self.lock:
