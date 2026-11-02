@@ -57,6 +57,8 @@ if [[ "$SCRIPT_DIR" != "$TARGET_DIR" ]]; then
     echo "===> Syncing codebase to $TARGET_DIR (excluding runtime state and local secrets)..."
     mkdir -p "$TARGET_DIR"
     rsync -a \
+        --delete \
+        --delete-delay \
         --exclude='/.git/' \
         --exclude='/venv/' \
         --exclude='/__pycache__/' \
@@ -77,6 +79,10 @@ if [[ "$SCRIPT_DIR" != "$TARGET_DIR" ]]; then
         --exclude='/tools/danser/***' \
         "$SCRIPT_DIR/" "$TARGET_DIR/"
 fi
+
+# Production configuration is loaded only from /etc/osu-stream/*.env.
+# Remove secrets left by older deployments.
+find "$TARGET_DIR" -maxdepth 1 -type f -name '.env*' -delete
 
 # 4. Setup Python virtual environment
 echo "===> Setting up Python virtual environment..."
