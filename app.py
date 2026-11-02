@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -20,6 +21,8 @@ from aiohttp import web
 from config import Config, ROOT, check_role_requirements, load_env
 from ordr_client import OrdrClient, RenderRequestError
 from queue_store import QueueStore, read_json, write_json_atomic
+from render_api import create_render_api_app
+from render_job_store import RenderJobStore
 from replay_source import (
     ReplayCandidate,
     ReplaySource,
@@ -201,6 +204,7 @@ class Producer:
         ordr: OrdrClient | None,
         submissions: SubmissionStore,
         danser: Any = None,
+        job_store: RenderJobStore | None = None,
     ):
         self.config = config
         self.store = store
@@ -209,6 +213,7 @@ class Producer:
         self.ordr = ordr
         self.submissions = submissions
         self.danser = danser
+        self.job_store = job_store
 
     def _reject(self, candidate: ReplayCandidate, reason: str) -> None:
         if not candidate.path.exists():
@@ -221,6 +226,10 @@ class Producer:
             candidate.path.unlink(missing_ok=True)
 
     async def run(self) -> None:
+        if self.config.run_mode == "controller":
+            await self._run_controller()
+            return
+
         if self.ordr:
             await self.ordr.connect()
         while True:
@@ -356,6 +365,56 @@ class Producer:
                 self.runtime.current_render_id = None
                 self.runtime.render_progress = ""
                 await asyncio.sleep(15)
+
+    async def _run_controller(self) -> None:
+        if self.job_store is None:
+            raise RuntimeError("RenderJobStore is required in controller mode")
+        while True:
+            candidate: ReplayCandidate | None = None
+            try:
+                active_jobs = await self.job_store.count_active_jobs()
+                ready_count = len(self.store.ready_videos)
+                if ready_count + active_jobs >= self.config.buffer_size:
+                    self.runtime.phase = "controller buffer ready"
+                    self.runtime.last_error = ""
+                    await asyncio.sleep(2)
+                    continue
+
+                self.runtime.phase = "controller: looking for a replay"
+                candidate = await self.source.next()
+                if candidate.submission_id is not None:
+                    await self.submissions.mark_rendering(candidate.submission_id, None)
+
+                description = candidate.original_name
+                job_id = await self.job_store.create_job(
+                    source_replay=str(candidate.path.resolve()),
+                    score_id=candidate.score_id,
+                    submission_id=candidate.submission_id,
+                    mods=candidate.mods,
+                    mods_label=candidate.mods_label,
+                    description=description,
+                )
+                logging.info(
+                    "Created render job %s for replay %s (%s)",
+                    job_id,
+                    candidate.original_name,
+                    candidate.mods_label,
+                )
+                self.runtime.phase = f"job {job_id[:8]} queued"
+                self.runtime.last_error = ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                message = str(error) or type(error).__name__
+                logging.exception("Controller Producer error: %s", message)
+                self.runtime.last_error = message
+                self.runtime.phase = "controller: waiting after error"
+                if candidate:
+                    if candidate.submission_id is not None:
+                        await self.submissions.mark_failed(candidate.submission_id, message)
+                    self._reject(candidate, message)
+                    candidate = None
+                await asyncio.sleep(10)
 
 
 def create_web_app(
@@ -579,13 +638,31 @@ async def run(config: Config, no_producer: bool) -> None:
     source = ReplaySource(config, store, session, submissions)
     ordr: OrdrClient | None = None
     danser: Any = None
-    if config.render_backend == "ordr":
+    job_store: RenderJobStore | None = None
+    internal_runner: web.AppRunner | None = None
+    internal_site: web.TCPSite | None = None
+    completion_task: asyncio.Task[Any] | None = None
+
+    if config.run_mode == "controller":
+        job_store = RenderJobStore(config.root)
+        reconciled = await job_store.reconcile_expired_jobs()
+        if reconciled:
+            logging.info("Startup reconciliation: recovered %d expired render job(s)", reconciled)
+
+        internal_app = create_render_api_app(job_store, config)
+        internal_runner = web.AppRunner(internal_app, access_log=None, shutdown_timeout=2)
+        await internal_runner.setup()
+        internal_site = web.TCPSite(internal_runner, config.render_api_host, config.render_api_port)
+        await internal_site.start()
+        logging.info("Render API listening on http://%s:%d", config.render_api_host, config.render_api_port)
+    elif config.render_backend == "ordr":
         ordr = OrdrClient(config, store, runtime, session)
     else:
         from danser_renderer import DanserRenderer
 
         danser = DanserRenderer(config, runtime, session)
-    producer = Producer(config, store, runtime, source, ordr, submissions, danser)
+
+    producer = Producer(config, store, runtime, source, ordr, submissions, danser, job_store)
     web_app = create_web_app(config, store, runtime)
     runner = web.AppRunner(web_app, access_log=None, shutdown_timeout=2)
     await runner.setup()
@@ -612,6 +689,88 @@ async def run(config: Config, no_producer: bool) -> None:
         producer_task = asyncio.create_task(producer.run(), name="producer")
     else:
         runtime.phase = "web player ready (producer disabled)"
+
+    if config.run_mode == "controller" and job_store is not None:
+        async def job_completion_watcher():
+            ffprobe = shutil.which("ffprobe")
+            while True:
+                try:
+                    await asyncio.sleep(5)
+                    completed_jobs = await job_store.get_completed_jobs()
+                    for job in completed_jobs:
+                        job_id = job["id"]
+                        raw_path = job.get("artifact_path")
+                        if not raw_path:
+                            continue
+                        artifact = Path(raw_path)
+                        if not artifact.is_file() or artifact.stat().st_size == 0:
+                            logging.warning("Completed job %s artifact %s missing or empty", job_id, raw_path)
+                            continue
+
+                        # Verify via ffprobe (has streams, duration > 0)
+                        duration = 0.0
+                        if ffprobe:
+                            try:
+                                proc = await asyncio.create_subprocess_exec(
+                                    ffprobe,
+                                    "-v",
+                                    "error",
+                                    "-show_entries",
+                                    "format=duration:stream=codec_type",
+                                    "-of",
+                                    "json",
+                                    str(artifact),
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
+                                )
+                                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+                                if proc.returncode != 0:
+                                    logging.warning("ffprobe validation failed for job %s artifact", job_id)
+                                    continue
+                                probe_data = json.loads(stdout)
+                                streams = probe_data.get("streams", [])
+                                codec_types = {s.get("codec_type") for s in streams}
+                                if "video" not in codec_types:
+                                    logging.warning("Artifact for job %s contains no video stream", job_id)
+                                    continue
+                                duration = float(probe_data.get("format", {}).get("duration", 0) or 0)
+                                if duration <= 0:
+                                    logging.warning("Artifact for job %s duration <= 0", job_id)
+                                    continue
+                            except Exception as probe_err:
+                                logging.warning("ffprobe error on job %s: %s", job_id, probe_err)
+                                continue
+
+                        metadata = {
+                            "score_id": job.get("score_id"),
+                            "submission_id": job.get("submission_id"),
+                            "render_id": f"worker-{job_id[:8]}",
+                            "renderer": "danser-worker",
+                            "mods": job.get("mods_label", "NM"),
+                            "mods_value": job.get("mods", 0),
+                            "description": job.get("description") or f"Replay render {job_id}",
+                            "duration": duration,
+                            "queued_at": int(time.time()),
+                        }
+                        queued_dest = await store.enqueue(artifact, metadata)
+                        logging.info("Moved completed render %s into queue: %s", job_id, queued_dest.name)
+
+                        submission_id = job.get("submission_id")
+                        if submission_id is not None:
+                            await submissions.mark_ready(submission_id, queued_dest.name, None)
+
+                        await job_store.archive_job(job_id)
+
+                        # Clean up source replay if it exists in work
+                        source_replay = Path(job.get("source_replay", ""))
+                        if source_replay.is_file():
+                            source_replay.unlink(missing_ok=True)
+                except asyncio.CancelledError:
+                    break
+                except Exception as loop_err:
+                    logging.exception("Error in job_completion_watcher: %s", loop_err)
+
+        completion_task = asyncio.create_task(job_completion_watcher(), name="job-completion-watcher")
     discord_service: Any = None
     discord_task: asyncio.Task[Any] | None = None
     if config.discord_enabled:
@@ -653,6 +812,10 @@ async def run(config: Config, no_producer: bool) -> None:
             producer_task.cancel()
             await asyncio.gather(producer_task, return_exceptions=True)
             logging.info("Producer stopped")
+        if completion_task:
+            completion_task.cancel()
+            await asyncio.gather(completion_task, return_exceptions=True)
+            logging.info("Job completion watcher stopped")
         if discord_service:
             try:
                 await asyncio.wait_for(discord_service.close(), timeout=10)
@@ -666,11 +829,20 @@ async def run(config: Config, no_producer: bool) -> None:
             await ordr.close()
         if danser:
             await danser.close()
+        if job_store:
+            await job_store.close()
         logging.info("Render backend stopped")
         await session.close()
         logging.info("HTTP client stopped")
         await submissions.close()
         logging.info("Submission store stopped")
+        if internal_site:
+            await internal_site.stop()
+        if internal_runner:
+            try:
+                await asyncio.wait_for(internal_runner.cleanup(), timeout=3)
+            except asyncio.TimeoutError:
+                logging.warning("Internal Render API shutdown timed out")
         await site.stop()
         try:
             await asyncio.wait_for(runner.cleanup(), timeout=3)

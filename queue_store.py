@@ -81,6 +81,10 @@ class QueueStore:
     def video_files(self) -> list[Path]:
         return sorted(self.queue_dir.glob("*.mp4"))
 
+    @property
+    def ready_videos(self) -> list[Path]:
+        return self.video_files()
+
     def buffered_count(self) -> int:
         return len(self.video_files())
 

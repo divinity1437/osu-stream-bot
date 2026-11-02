@@ -24,6 +24,7 @@ def test_standalone_mode_initialization(monkeypatch):
 
 def test_controller_mode_validation(monkeypatch):
     monkeypatch.setenv("RUN_MODE", "controller")
+    monkeypatch.setenv("RENDER_API_TOKEN", "test-token")
 
     config = Config.from_env(root=ROOT)
     assert config.run_mode == "controller"

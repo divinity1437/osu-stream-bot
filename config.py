@@ -97,6 +97,8 @@ class Config:
     max_artifact_bytes: int = 1024 * 1024 * 1024
     worker_id: str = ""
     render_heartbeat_seconds: float = 15.0
+    render_api_host: str = "127.0.0.1"
+    render_api_port: int = 8788
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Config":
@@ -183,6 +185,8 @@ class Config:
             max_artifact_bytes=env_int("MAX_ARTIFACT_MIB", 1024) * 1024 * 1024,
             worker_id=os.getenv("WORKER_ID", f"worker-{socket.gethostname()}").strip(),
             render_heartbeat_seconds=env_float("RENDER_HEARTBEAT_SECONDS", 15.0),
+            render_api_host=os.getenv("RENDER_API_HOST", "127.0.0.1").strip(),
+            render_api_port=env_int("RENDER_API_PORT", 8788),
         )
 
         config._validate()
@@ -236,6 +240,8 @@ class Config:
             raise ValueError("DANSER_MAX_MAP_MIB must be at least 10")
 
     def _validate_controller(self) -> None:
+        if not self.render_api_token:
+            raise ValueError("RENDER_API_TOKEN is required when RUN_MODE is 'controller'")
         if self.buffer_size < 1:
             raise ValueError("BUFFER_SIZE must be at least 1")
         if self.score_id_min < 1:

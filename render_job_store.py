@@ -34,7 +34,12 @@ class RenderJobStore:
                 artifact_path TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
-                error TEXT
+                error TEXT,
+                score_id INTEGER,
+                submission_id INTEGER,
+                mods INTEGER DEFAULT 0,
+                mods_label TEXT DEFAULT 'NM',
+                description TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_render_jobs_status_created
                 ON render_jobs(status, created_at, id);
@@ -42,11 +47,82 @@ class RenderJobStore:
                 ON render_jobs(status, lease_expires_at);
             """
         )
+        # Handle existing databases without the metadata columns
+        cursor = self.connection.execute("PRAGMA table_info(render_jobs)")
+        existing_cols = {row["name"] for row in cursor.fetchall()}
+        new_cols = [
+            ("score_id", "INTEGER"),
+            ("submission_id", "INTEGER"),
+            ("mods", "INTEGER DEFAULT 0"),
+            ("mods_label", "TEXT DEFAULT 'NM'"),
+            ("description", "TEXT"),
+        ]
+        for col_name, col_type in new_cols:
+            if col_name not in existing_cols:
+                self.connection.execute(f"ALTER TABLE render_jobs ADD COLUMN {col_name} {col_type}")
         self.connection.commit()
 
     @staticmethod
     def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
+
+    async def create_job(
+        self,
+        source_replay: str,
+        score_id: int | None = None,
+        submission_id: int | None = None,
+        mods: int = 0,
+        mods_label: str = "NM",
+        description: str = "",
+    ) -> str:
+        job_id = str(uuid.uuid4())
+        now = time.time()
+        async with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO render_jobs (
+                    id, status, source_replay, score_id, submission_id,
+                    mods, mods_label, description, created_at, updated_at
+                ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    source_replay,
+                    score_id,
+                    submission_id,
+                    mods,
+                    mods_label,
+                    description,
+                    now,
+                    now,
+                ),
+            )
+            self.connection.commit()
+        return job_id
+
+    async def count_active_jobs(self) -> int:
+        async with self.lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM render_jobs WHERE status IN ('queued', 'leased', 'rendering')"
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def get_completed_jobs(self) -> list[dict[str, Any]]:
+        async with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM render_jobs WHERE status = 'completed' ORDER BY updated_at ASC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def archive_job(self, job_id: str) -> bool:
+        now = time.time()
+        async with self.lock:
+            cursor = self.connection.execute(
+                "UPDATE render_jobs SET status = 'archived', updated_at = ? WHERE id = ? AND status = 'completed'",
+                (now, job_id),
+            )
+            self.connection.commit()
+            return cursor.rowcount == 1
 
     async def claim_job(self, worker_id: str, lease_seconds: float = 60.0) -> dict[str, Any] | None:
         async with self.lock:
