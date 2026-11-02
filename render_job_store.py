@@ -12,6 +12,7 @@ FINAL_STATUSES = ("completed", "failed", "cancelled")
 class RenderJobStore:
     def __init__(self, root: Path):
         self.root = root.resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
         self.database_path = self.root / "render_jobs.db"
         self.connection = sqlite3.connect(self.database_path, timeout=30)
         self.connection.row_factory = sqlite3.Row

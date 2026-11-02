@@ -126,7 +126,10 @@ class Config:
         else:
             danser_dir = danser_dir.resolve()
 
-        controller_url = os.getenv("CONTROLLER_URL", "").strip()
+        controller_url = (
+            os.getenv("CONTROLLER_RENDER_URL", "").strip()
+            or os.getenv("CONTROLLER_URL", "").strip()
+        )
         render_api_token = os.getenv("RENDER_API_TOKEN", "").strip()
 
         config = cls(
