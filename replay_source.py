@@ -195,19 +195,68 @@ class ReplaySource:
         return collected
 
     async def _refill_score_pool(self) -> None:
-        async with self.session.get(self.config.scores_url, timeout=aiohttp.ClientTimeout(total=20)) as response:
-            if response.status != 200:
-                raise ValueError(f"scores endpoint HTTP {response.status}")
-            payload = await response.json(content_type=None)
-        ids = self._score_ids(payload)
-        if not ids:
-            raise ValueError("No score entries found in the API response")
-        highest = max(ids)
-        self.discovered_max_id = max(self.discovered_max_id, highest)
-        fresh = [score_id for score_id in ids if not self.store.is_score_used(score_id)]
-        random.shuffle(fresh)
-        self.score_pool = fresh
-        logging.info("Discovered %d scores from osuokayu (highest seen: %d)", len(ids), self.discovered_max_id)
+        # Discover latest max ID and total scores from meta
+        try:
+            async with self.session.get(
+                self.config.scores_url,
+                params={"page": 1, "page_size": 1},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status == 200:
+                    payload = await response.json(content_type=None)
+                    meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+                    total = meta.get("total")
+                    if isinstance(total, int) and total > 0:
+                        self.score_total = total
+                        # Estimate max ID or fetch last page to discover true max ID
+                        if self.discovered_max_id < 1_500_000:
+                            last_page = max(1, (total + 99) // 100)
+                            async with self.session.get(
+                                self.config.scores_url,
+                                params={"page": last_page, "page_size": 100},
+                                timeout=aiohttp.ClientTimeout(total=15),
+                            ) as last_resp:
+                                if last_resp.status == 200:
+                                    last_payload = await last_resp.json(content_type=None)
+                                    last_ids = self._score_ids(last_payload)
+                                    if last_ids:
+                                        self.discovered_max_id = max(self.discovered_max_id, max(last_ids))
+        except Exception as err:
+            logging.debug("Could not discover latest score meta: %s", err)
+
+        # Ensure we have a high upper bound for random ID probing
+        if self.discovered_max_id < 1_500_000:
+            self.discovered_max_id = 1_565_000
+
+        # Sample a random page from the 1.2M+ scores on okayu
+        random_page = 1
+        if self.score_total and self.score_total > 50:
+            max_page = max(1, self.score_total // 50)
+            random_page = random.randint(1, max_page)
+
+        try:
+            async with self.session.get(
+                self.config.scores_url,
+                params={"page": random_page, "page_size": 50},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                if response.status == 200:
+                    payload = await response.json(content_type=None)
+                    ids = self._score_ids(payload)
+                    fresh = [score_id for score_id in ids if not self.store.is_score_used(score_id)]
+                    random.shuffle(fresh)
+                    self.score_pool = fresh
+                    if ids:
+                        self.discovered_max_id = max(self.discovered_max_id, max(ids))
+                    logging.info(
+                        "Discovered %d scores from osuokayu (page %d, pool: %d, max ID: %d)",
+                        len(ids),
+                        random_page,
+                        len(self.score_pool),
+                        self.discovered_max_id,
+                    )
+        except Exception as error:
+            logging.warning("Could not query score list page %d: %s", random_page, error)
 
     async def _download_replay(self, score_id: int) -> Path | None:
         destination = self.store.work_dir / f"score-{score_id}-{uuid.uuid4().hex[:8]}.osr"

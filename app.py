@@ -148,7 +148,7 @@ BUILTIN_BACKGROUND_PROFILES: dict[str, dict[str, str]] = {
     },
     "waiting_replays": {
         "title": "osu! replay stream",
-        "subtitle": "Waiting for replays. Submit with /submit!",
+        "subtitle": "Waiting for replays. Submit with !submit",
         "label": "Waiting for replays",
     },
 }
