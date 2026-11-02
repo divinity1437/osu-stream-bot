@@ -80,6 +80,21 @@ class RenderApi:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.max_artifact_bytes = getattr(config, "max_artifact_bytes", 1024 * 1024 * 1024)
 
+    async def handle_get_replay(self, request: web.Request) -> web.StreamResponse:
+        job_id = request.match_info.get("job_id", "")
+        if not is_valid_uuid(job_id):
+            return web.json_response({"error": "Invalid job_id format"}, status=400)
+
+        job = await self.job_store.get_job(job_id)
+        if not job:
+            return web.json_response({"error": "Job not found"}, status=404)
+
+        source_replay = Path(job.get("source_replay", "")).resolve()
+        if not source_replay.is_file():
+            return web.json_response({"error": "Source replay file not found on disk"}, status=404)
+
+        return web.FileResponse(source_replay)
+
     async def handle_claim(self, request: web.Request) -> web.Response:
         body = await read_json_object(request)
 
@@ -255,6 +270,7 @@ def create_render_api_app(job_store: RenderJobStore, config: Config) -> web.Appl
     api = RenderApi(job_store, config)
 
     app.router.add_post("/internal/v1/render/jobs/claim", api.handle_claim)
+    app.router.add_get("/internal/v1/render/jobs/{job_id}/replay", api.handle_get_replay)
     app.router.add_post("/internal/v1/render/jobs/{job_id}/heartbeat", api.handle_heartbeat)
     app.router.add_put("/internal/v1/render/jobs/{job_id}/artifact", api.handle_upload_artifact)
     app.router.add_post("/internal/v1/render/jobs/{job_id}/complete", api.handle_complete)

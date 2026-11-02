@@ -94,6 +94,8 @@ class Config:
     controller_url: str = ""
     render_api_token: str = ""
     max_artifact_bytes: int = 1024 * 1024 * 1024
+    worker_id: str = ""
+    render_heartbeat_seconds: float = 15.0
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Config":
@@ -178,6 +180,8 @@ class Config:
             controller_url=controller_url,
             render_api_token=render_api_token,
             max_artifact_bytes=env_int("MAX_ARTIFACT_MIB", 1024) * 1024 * 1024,
+            worker_id=os.getenv("WORKER_ID", f"worker-{os.uname().nodename}").strip(),
+            render_heartbeat_seconds=env_float("RENDER_HEARTBEAT_SECONDS", 15.0),
         )
 
         config._validate()
