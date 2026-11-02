@@ -329,10 +329,9 @@ def check_role_requirements(config: Config) -> None:
             raise SystemExit("Missing required binaries: " + ", ".join(missing_binaries))
 
         if not config.danser_songs_dir.is_dir() or not any(config.danser_songs_dir.rglob("*.osu")):
-            print(
-                f"Warning: No .osu beatmap files found in {config.danser_songs_dir}. "
-                "Render Worker will fail on replays until beatmaps are synchronized.",
-                file=sys.stderr,
+            raise SystemExit(
+                f"No .osu beatmap files found in {config.danser_songs_dir}. "
+                "Synchronize beatmaps before starting Render Worker."
             )
 
         print(f"Role:           Render Worker")
