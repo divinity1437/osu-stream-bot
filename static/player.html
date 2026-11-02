@@ -130,7 +130,7 @@
         }
         if (current && state.current_video !== current.name) {
           await switchAfterControl();
-        } else if (!current && state.current_video) {
+        } else if (!current) {
           loadNext();
         }
       } catch (error) {
