@@ -120,8 +120,18 @@
         const state = await jsonFetch('/api/player-state');
         applyVolume(state.volume);
         applyBackground(state.background);
+        if (state.paused) {
+          if (current) {
+            current = null;
+            detachVideo();
+          }
+          showFallback('Stream paused');
+          return;
+        }
         if (current && state.current_video !== current.name) {
           await switchAfterControl();
+        } else if (!current && state.current_video) {
+          loadNext();
         }
       } catch (error) {
         console.error('Player-state sync failed:', error);

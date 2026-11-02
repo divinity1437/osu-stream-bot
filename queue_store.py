@@ -48,6 +48,7 @@ class QueueStore:
                 "skipped_count": 0,
                 "deleted_count": 0,
                 "player_volume": config.initial_volume,
+                "paused": False,
                 "playback_revision": 0,
                 "last_submit_unix": 0,
                 "used_score_ids": [],
@@ -70,6 +71,7 @@ class QueueStore:
         self.state.setdefault("skipped_count", 0)
         self.state.setdefault("deleted_count", 0)
         self.state.setdefault("player_volume", self.config.initial_volume)
+        self.state.setdefault("paused", False)
         self.state.setdefault("playback_revision", 0)
         self.state.setdefault("last_submit_unix", 0)
         self.state.setdefault("used_score_ids", [])
@@ -126,6 +128,9 @@ class QueueStore:
 
     async def get_next(self) -> dict[str, Any] | None:
         async with self.lock:
+            if self.state.get("paused"):
+                return None
+
             current_name = self.state.get("current_video")
             current_path = self.queue_dir / current_name if current_name else None
             if not current_path or not current_path.is_file():
@@ -178,10 +183,23 @@ class QueueStore:
             self._save()
         return volume
 
+    async def set_paused(self, paused: bool) -> bool:
+        async with self.lock:
+            old_paused = bool(self.state.get("paused", False))
+            self.state["paused"] = paused
+            if paused:
+                # If paused, clear current_video so the player falls back to background
+                self.state["current_video"] = None
+            if old_paused != paused:
+                self.state["playback_revision"] = int(self.state.get("playback_revision", 0)) + 1
+            self._save()
+            return paused
+
     async def player_state(self) -> dict[str, Any]:
         async with self.lock:
             return {
                 "current_video": self.state.get("current_video"),
+                "paused": bool(self.state.get("paused", False)),
                 "volume": int(self.state.get("player_volume", self.config.initial_volume)),
                 "revision": int(self.state.get("playback_revision", 0)),
             }

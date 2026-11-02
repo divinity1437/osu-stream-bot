@@ -103,6 +103,57 @@ def detect_image_content_type(filename: str, advertised_type: str, data: bytes) 
     raise ValueError("The uploaded file is not recognized as an image")
 
 
+def generate_preset_svg(title: str, subtitle: str) -> bytes:
+    title_escaped = html.escape(title)
+    subtitle_escaped = html.escape(subtitle)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="75%">
+      <stop offset="0" stop-color="#261e46"/>
+      <stop offset="0.55" stop-color="#121224"/>
+      <stop offset="1" stop-color="#080910"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#ff66aa"/>
+      <stop offset="1" stop-color="#8f77ff"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="12"/></filter>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <circle cx="640" cy="320" r="190" fill="none" stroke="#ff66aa" stroke-width="18" opacity=".12" filter="url(#glow)"/>
+  <circle cx="640" cy="320" r="150" fill="none" stroke="url(#accent)" stroke-width="10" opacity=".9"/>
+  <circle cx="640" cy="320" r="68" fill="url(#accent)" opacity=".9"/>
+  <circle cx="640" cy="320" r="32" fill="#161426"/>
+  <text x="640" y="540" fill="#ffffff" font-family="Inter,Arial,sans-serif" font-size="44" font-weight="700" text-anchor="middle">{title_escaped}</text>
+  <text x="640" y="595" fill="#b8b2cb" font-family="Inter,Arial,sans-serif" font-size="24" text-anchor="middle">{subtitle_escaped}</text>
+</svg>"""
+    return svg.encode("utf-8")
+
+
+BUILTIN_BACKGROUND_PROFILES: dict[str, dict[str, str]] = {
+    "default": {
+        "title": "osu! replay stream",
+        "subtitle": "rendering the next play…",
+        "label": "Rendering the next play (Default)",
+    },
+    "technical_issue": {
+        "title": "osu! replay stream",
+        "subtitle": "Technical Issue. Please stand by…",
+        "label": "Technical Issue",
+    },
+    "temporary_pause": {
+        "title": "osu! replay stream",
+        "subtitle": "Stream paused. We'll be right back!",
+        "label": "Temporary Pause",
+    },
+    "waiting_replays": {
+        "title": "osu! replay stream",
+        "subtitle": "Waiting for replays. Submit with /submit!",
+        "label": "Waiting for replays",
+    },
+}
+
+
 class BackgroundStore:
     """Keep the optional custom waiting background in memory for this run only."""
 
@@ -112,31 +163,37 @@ class BackgroundStore:
         self._data: bytes | None = None
         self._name = fallback_path.name
         self._content_type = "image/svg+xml"
+        self._profile_id = "default"
         self._revision = 0
         self._lock = asyncio.Lock()
 
     def _info(self) -> dict[str, Any]:
-        custom = self._data is not None
+        is_custom = self._profile_id == "custom" and self._data is not None
         try:
             fallback_size = self.fallback_path.stat().st_size
         except OSError:
             fallback_size = 0
         return {
-            "custom": custom,
-            "name": self._name if custom else self.fallback_path.name,
-            "content_type": self._content_type if custom else "image/svg+xml",
-            "size": len(self._data) if custom else fallback_size,
+            "custom": is_custom,
+            "profile": self._profile_id,
+            "available_profiles": [
+                {"id": k, "label": v["label"], "active": (k == self._profile_id)}
+                for k, v in BUILTIN_BACKGROUND_PROFILES.items()
+            ],
+            "name": self._name if is_custom else BUILTIN_BACKGROUND_PROFILES.get(self._profile_id, {}).get("label", self.fallback_path.name),
+            "content_type": self._content_type,
+            "size": len(self._data) if self._data is not None else fallback_size,
             "revision": self._revision,
             "url": f"/background?v={self._revision}",
             "max_size": self.max_bytes,
-            "temporary": custom,
+            "temporary": is_custom,
         }
 
     async def info(self) -> dict[str, Any]:
         async with self._lock:
             return self._info()
 
-    async def set(self, data: bytes, name: str, content_type: str) -> dict[str, Any]:
+    async def set_custom(self, data: bytes, name: str, content_type: str) -> dict[str, Any]:
         if not data:
             raise ValueError("The image file is empty")
         if len(data) > self.max_bytes:
@@ -146,6 +203,20 @@ class BackgroundStore:
             self._data = bytes(data)
             self._name = safe_name
             self._content_type = content_type
+            self._profile_id = "custom"
+            self._revision += 1
+            return self._info()
+
+    async def set_profile(self, profile_id: str) -> dict[str, Any]:
+        if profile_id not in BUILTIN_BACKGROUND_PROFILES:
+            raise ValueError(f"Unknown background profile: {profile_id}")
+        profile = BUILTIN_BACKGROUND_PROFILES[profile_id]
+        svg_data = generate_preset_svg(profile["title"], profile["subtitle"])
+        async with self._lock:
+            self._data = svg_data
+            self._name = profile["label"]
+            self._content_type = "image/svg+xml"
+            self._profile_id = profile_id
             self._revision += 1
             return self._info()
 
@@ -154,6 +225,7 @@ class BackgroundStore:
             self._data = None
             self._name = self.fallback_path.name
             self._content_type = "image/svg+xml"
+            self._profile_id = "default"
             self._revision += 1
             return self._info()
 
@@ -189,6 +261,7 @@ class RuntimeState:
             "skipped_count": int(self.store.state.get("skipped_count", 0)),
             "deleted_count": int(self.store.state.get("deleted_count", 0)),
             "current_video": self.store.state.get("current_video"),
+            "queue_paused": bool(self.store.state.get("paused", False)),
             "player_volume": int(self.store.state.get("player_volume", self.config.initial_volume)),
             "playback_revision": int(self.store.state.get("playback_revision", 0)),
         }
@@ -479,7 +552,7 @@ def create_web_app(
                 field.headers.get("Content-Type", ""),
                 data,
             )
-            info = await backgrounds.set(data, original, content_type)
+            info = await backgrounds.set_custom(data, original, content_type)
         except web.HTTPRequestEntityTooLarge:
             limit_mib = config.max_background_bytes // (1024 * 1024)
             return web.json_response(
@@ -491,9 +564,22 @@ def create_web_app(
         logging.info("Temporary waiting background uploaded through control page: %s", info["name"])
         return web.json_response(info, status=201, headers={"Cache-Control": "no-store"})
 
+    async def select_background_profile(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+            profile_id = str(payload.get("profile", "")).strip()
+        except (json.JSONDecodeError, web.HTTPBadRequest):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        try:
+            info = await backgrounds.set_profile(profile_id)
+        except ValueError as err:
+            return web.json_response({"error": str(err)}, status=400)
+        logging.info("Waiting background profile changed to %s", profile_id)
+        return web.json_response(info, headers={"Cache-Control": "no-store"})
+
     async def reset_background(_: web.Request) -> web.Response:
         info = await backgrounds.reset()
-        logging.info("Waiting background reset to fallback.svg from control page")
+        logging.info("Waiting background reset to default from control page")
         return web.json_response(info, headers={"Cache-Control": "no-store"})
 
     async def status(_: web.Request) -> web.Response:
@@ -537,6 +623,16 @@ def create_web_app(
             return web.json_response({"error": "Volume must be between 0 and 100"}, status=400)
         saved = await store.set_volume(volume)
         return web.json_response({"volume": saved})
+
+    async def set_playback_pause(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+            paused = bool(payload["paused"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, web.HTTPBadRequest):
+            return web.json_response({"error": "paused must be a boolean"}, status=400)
+        result = await store.set_paused(paused)
+        logging.info("Stream playback pause toggled from control page: %s", result)
+        return web.json_response({"paused": result})
 
     async def skip_current(_: web.Request) -> web.Response:
         skipped, name = await store.skip_current()
@@ -605,12 +701,14 @@ def create_web_app(
     app.router.add_get("/background", background_image)
     app.router.add_get("/api/background", background_status)
     app.router.add_post("/api/background", upload_background)
+    app.router.add_post("/api/background/profile", select_background_profile)
     app.router.add_delete("/api/background", reset_background)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/player-state", player_state)
     app.router.add_get("/api/next", next_video)
     app.router.add_post("/api/complete", complete)
     app.router.add_post("/api/settings/volume", set_volume)
+    app.router.add_post("/api/settings/pause", set_playback_pause)
     app.router.add_post("/api/skip", skip_current)
     app.router.add_delete("/api/queue/{name}", remove_video)
     app.router.add_post("/api/replays", upload)

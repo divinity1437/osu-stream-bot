@@ -56,6 +56,7 @@
         <input id="volume" type="range" min="0" max="100" step="1" value="20">
       </div>
       <button id="mute" class="secondary">Mute</button>
+      <button id="toggle-pause" class="secondary">Pause stream</button>
       <button id="skip" class="danger" disabled>Skip current</button>
     </div>
     <div id="action-result" class="muted"></div>
@@ -68,14 +69,19 @@
     <div id="upload-result" class="muted"></div>
   </form>
 
-  <h2>Waiting background</h2>
+  <h2>Waiting background & Profiles</h2>
   <div class="card">
-    <p class="muted">The custom image is used while the player is waiting for a replay. It is kept only in memory and is automatically removed when the application restarts; <code>static/fallback.svg</code> is then used again.</p>
+    <p class="muted">Select a built-in waiting screen profile or upload a custom image. Custom uploads are kept only in memory during this run.</p>
+    <div style="margin-bottom: 16px;">
+      <label style="display:block; margin-bottom: 8px; font-weight: 600;">Preset Profiles:</label>
+      <div id="profile-buttons" class="controls"></div>
+    </div>
     <form id="background-upload">
+      <label style="display:block; margin-bottom: 8px; font-weight: 600;">Custom Background File:</label>
       <input id="background-file" name="background" type="file" accept="image/*" required>
       <div class="controls">
-        <button class="upload-button">Set temporary background</button>
-        <button id="background-reset" type="button" class="secondary">Restore fallback.svg</button>
+        <button class="upload-button">Set temporary custom background</button>
+        <button id="background-reset" type="button" class="secondary">Restore default</button>
       </div>
     </form>
     <img id="background-preview" class="background-preview" src="/background?v=0" alt="Current waiting background">
@@ -149,8 +155,31 @@
       const preview = byId('background-preview');
       preview.src = background.url || `/background?v=${encodeURIComponent(background.revision)}`;
       byId('background-result').textContent = background.custom
-        ? `Temporary: ${background.name} (${Math.ceil(background.size / 1024)} KiB)`
-        : 'Default: static/fallback.svg';
+        ? `Custom image: ${background.name} (${Math.ceil(background.size / 1024)} KiB)`
+        : `Profile: ${background.name}`;
+
+      const container = byId('profile-buttons');
+      container.replaceChildren();
+      for (const p of background.available_profiles || []) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = p.active ? 'small' : 'small secondary';
+        btn.textContent = p.label;
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await api('/api/background/profile', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ profile: p.id })
+            });
+            renderBackground(res);
+            setAction(`Background set to profile "${p.label}"`);
+          } catch (err) {
+            setAction(err.message, true);
+          }
+        });
+        container.append(btn);
+      }
     }
 
     async function refresh() {
@@ -165,6 +194,16 @@
           : 'danser (local)';
         byId('error').textContent = data.last_error || '';
         byId('skip').disabled = !data.current_video;
+
+        const isPaused = Boolean(data.queue_paused ?? data.paused);
+        const pauseBtn = byId('toggle-pause');
+        if (isPaused) {
+          pauseBtn.textContent = 'Resume stream';
+          pauseBtn.className = 'danger';
+        } else {
+          pauseBtn.textContent = 'Pause stream';
+          pauseBtn.className = 'secondary';
+        }
         if (!volumeEditing) {
           byId('volume').value = data.player_volume;
           byId('volume-value').textContent = `${data.player_volume}%`;
@@ -223,6 +262,20 @@
       volumeTimer = setTimeout(() => saveVolume(value), 180);
     });
     byId('mute').addEventListener('click', () => saveVolume(0));
+    byId('toggle-pause').addEventListener('click', async () => {
+      const isPaused = Boolean(latestState && (latestState.queue_paused ?? latestState.paused));
+      try {
+        const result = await api('/api/settings/pause', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paused: !isPaused })
+        });
+        setAction(result.paused ? 'Stream playback paused' : 'Stream playback resumed');
+        await refresh();
+      } catch (error) {
+        setAction(error.message, true);
+      }
+    });
     byId('skip').addEventListener('click', async () => {
       try {
         const result = await api('/api/skip', { method: 'POST' });
