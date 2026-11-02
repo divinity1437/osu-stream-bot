@@ -93,6 +93,7 @@ class Config:
     danser_max_map_bytes: int
     controller_url: str = ""
     render_api_token: str = ""
+    max_artifact_bytes: int = 1024 * 1024 * 1024
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Config":
@@ -176,6 +177,7 @@ class Config:
             danser_max_map_bytes=env_int("DANSER_MAX_MAP_MIB", 300) * 1024 * 1024,
             controller_url=controller_url,
             render_api_token=render_api_token,
+            max_artifact_bytes=env_int("MAX_ARTIFACT_MIB", 1024) * 1024 * 1024,
         )
 
         config._validate()

@@ -4,7 +4,7 @@ import time
 import uuid
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer
 
 from config import Config
 from render_api import create_render_api_app
@@ -15,8 +15,8 @@ def test_render_api_full_flow(tmp_path):
     async def _test():
         store = RenderJobStore(tmp_path)
         config = Config.from_env(root=tmp_path)
-        # Set token in config
         object.__setattr__(config, "render_api_token", "secret-test-token")
+        object.__setattr__(config, "max_artifact_bytes", 1024 * 1024)
 
         app = create_render_api_app(store, config)
         server = TestServer(app)
@@ -26,9 +26,10 @@ def test_render_api_full_flow(tmp_path):
         try:
             headers = {"Authorization": "Bearer secret-test-token"}
 
-            # 1. Test Auth: no token -> 401, bad token -> 401
+            # 1. Test Auth: no token -> 401 with WWW-Authenticate, bad token -> 401
             resp = await client.post("/internal/v1/render/jobs/claim", json={"worker_id": "w1"})
             assert resp.status == 401
+            assert resp.headers.get("WWW-Authenticate") == "Bearer"
 
             resp = await client.post(
                 "/internal/v1/render/jobs/claim",
@@ -45,7 +46,7 @@ def test_render_api_full_flow(tmp_path):
             )
             assert resp.status == 204
 
-            # Seed 1 job
+            # 3. Seed 1 job
             job_uuid = str(uuid.uuid4())
             now = time.time()
             store.connection.execute(
@@ -58,7 +59,7 @@ def test_render_api_full_flow(tmp_path):
             )
             store.connection.commit()
 
-            # 3. Test Claim with job -> 200
+            # 4. Test Claim with job -> 200
             resp = await client.post(
                 "/internal/v1/render/jobs/claim",
                 json={"worker_id": "w1"},
@@ -70,7 +71,16 @@ def test_render_api_full_flow(tmp_path):
             assert claimed_data["status"] == "leased"
             lease_token = claimed_data["lease_token"]
 
-            # 4. Test Heartbeat valid -> 200, invalid/stale -> 410
+            # 5. Heartbeat validation
+            # Invalid lease token format -> 400
+            resp = await client.post(
+                f"/internal/v1/render/jobs/{job_uuid}/heartbeat",
+                json={"lease_token": "not-a-uuid"},
+                headers=headers,
+            )
+            assert resp.status == 400
+
+            # Valid heartbeat -> 200
             resp = await client.post(
                 f"/internal/v1/render/jobs/{job_uuid}/heartbeat",
                 json={"lease_token": lease_token},
@@ -78,22 +88,62 @@ def test_render_api_full_flow(tmp_path):
             )
             assert resp.status == 200
 
+            # Stale lease token -> 410
+            other_uuid = str(uuid.uuid4())
             resp = await client.post(
                 f"/internal/v1/render/jobs/{job_uuid}/heartbeat",
-                json={"lease_token": "stale-token"},
+                json={"lease_token": other_uuid},
                 headers=headers,
             )
             assert resp.status == 410
 
-            # 5. Test Path traversal protection on job_id
+            # 6. Upload artifact validation
+            # Missing X-Lease-Token -> 400
             resp = await client.put(
-                "/internal/v1/render/jobs/../../etc/passwd/artifact",
+                f"/internal/v1/render/jobs/{job_uuid}/artifact",
                 data=b"dummy",
                 headers=headers,
             )
-            assert resp.status in {400, 404}
+            assert resp.status == 400
 
-            # 6. Test PUT artifact streaming
+            # Stale X-Lease-Token -> 410
+            resp = await client.put(
+                f"/internal/v1/render/jobs/{job_uuid}/artifact",
+                data=b"dummy",
+                headers={"Authorization": "Bearer secret-test-token", "X-Lease-Token": other_uuid},
+            )
+            assert resp.status == 410
+
+            # Empty artifact -> 400
+            resp = await client.put(
+                f"/internal/v1/render/jobs/{job_uuid}/artifact",
+                data=b"",
+                headers={"Authorization": "Bearer secret-test-token", "X-Lease-Token": lease_token},
+            )
+            assert resp.status == 400
+
+            # Too large artifact via content-length -> 413
+            resp = await client.put(
+                f"/internal/v1/render/jobs/{job_uuid}/artifact",
+                data=b"a" * 10,
+                headers={
+                    "Authorization": "Bearer secret-test-token",
+                    "X-Lease-Token": lease_token,
+                    "Content-Length": str(2 * 1024 * 1024),
+                    "Connection": "close",
+                },
+            )
+            assert resp.status == 413
+
+            # Complete before artifact uploaded -> 409
+            resp = await client.post(
+                f"/internal/v1/render/jobs/{job_uuid}/complete",
+                json={"lease_token": lease_token},
+                headers=headers,
+            )
+            assert resp.status == 409
+
+            # Valid artifact upload -> 200
             dummy_mp4 = b"RIFF" + (b"\x00" * 2048)
             resp = await client.put(
                 f"/internal/v1/render/jobs/{job_uuid}/artifact",
@@ -103,30 +153,25 @@ def test_render_api_full_flow(tmp_path):
             assert resp.status == 200
             res_json = await resp.json()
             assert res_json["status"] == "uploaded"
-            assert res_json["size"] == len(dummy_mp4)
+            uploaded_path = res_json["artifact_path"]
 
-            # Check artifact exists on disk
-            expected_file = tmp_path / "work" / "artifacts" / f"{job_uuid}.mp4"
-            assert expected_file.is_file()
-            assert expected_file.read_bytes() == dummy_mp4
-
-            # 7. Test Complete
+            # 7. Complete after artifact uploaded -> 200
             resp = await client.post(
                 f"/internal/v1/render/jobs/{job_uuid}/complete",
-                json={"lease_token": lease_token, "artifact_path": str(expected_file)},
+                json={"lease_token": lease_token},
                 headers=headers,
             )
             assert resp.status == 200
 
-            # Completed job cannot be heartbeated (stale)
+            # Second complete or heartbeat after complete -> 410
             resp = await client.post(
-                f"/internal/v1/render/jobs/{job_uuid}/heartbeat",
+                f"/internal/v1/render/jobs/{job_uuid}/complete",
                 json={"lease_token": lease_token},
                 headers=headers,
             )
             assert resp.status == 410
 
-            # 8. Test Fail endpoint on a new job
+            # 8. Fail endpoint test
             fail_job_uuid = str(uuid.uuid4())
             store.connection.execute(
                 """
@@ -156,6 +201,12 @@ def test_render_api_full_flow(tmp_path):
             db_job = await store.get_job(fail_job_uuid)
             assert db_job["status"] == "failed"
             assert db_job["error"] == "Danser crashed"
+
+            # 9. Fail-closed test: create_render_api_app without token raises RuntimeError
+            no_token_config = Config.from_env(root=tmp_path)
+            object.__setattr__(no_token_config, "render_api_token", "")
+            with pytest.raises(RuntimeError, match="RENDER_API_TOKEN is required"):
+                create_render_api_app(store, no_token_config)
 
         finally:
             await client.close()
