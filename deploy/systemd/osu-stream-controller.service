@@ -1,0 +1,29 @@
+[Unit]
+Description=osu-stream Controller Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osu-stream
+Group=osu-stream
+WorkingDirectory=/opt/osu-stream-bot
+EnvironmentFile=/etc/osu-stream/controller.env
+ExecStart=/opt/osu-stream-bot/venv/bin/python app.py
+
+Restart=always
+RestartSec=5s
+
+# Process & Resource limits
+LimitNOFILE=65536
+TimeoutStopSec=30s
+
+# Sandboxing & Security hardening
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths=/opt/osu-stream-bot
+
+[Install]
+WantedBy=multi-user.target

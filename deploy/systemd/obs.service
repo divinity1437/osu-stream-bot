@@ -1,0 +1,27 @@
+[Unit]
+Description=OBS Studio Headless Streamer
+After=network.target network-online.target xvfb.service osu-stream-controller.service
+Requires=xvfb.service
+Wants=osu-stream-controller.service
+
+[Service]
+Type=simple
+User=osu-stream
+Group=osu-stream
+WorkingDirectory=/opt/osu-stream-bot
+
+# Display and Software OpenGL rendering variables
+Environment="DISPLAY=:99"
+Environment="LIBGL_ALWAYS_SOFTWARE=1"
+Environment="GALLIUM_DRIVER=llvmpipe"
+
+ExecStart=/usr/bin/obs --startstreaming --minimize-to-tray --disable-missing-files-check
+
+Restart=always
+RestartSec=10s
+
+LimitNOFILE=65536
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

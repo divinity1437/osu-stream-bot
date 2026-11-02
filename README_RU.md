@@ -313,13 +313,162 @@ DISCORD_MAX_FILE_MIB=10
 
 ## Тесты и проверка
 
-В проекте пока нет отдельного pytest-набора; доступна smoke-проверка конфигурации и синтаксиса:
+В проекте есть модульные и сквозные E2E-тесты:
 
 ```bash
+# Запуск полного набора unit-тестов
+pytest -v
+
+# Быстрая проверка конфигурации, FFprobe и компиляции
 ./check.sh
+
+# Локальный сквозной E2E-тест сетевого взаимодействия Controller + Worker
+python smoke_test_e2e.py
 ```
 
-Она компилирует Python-модули, проверяет обязательные файлы, renderer, `ffprobe` и настройки. Для ручной проверки player используйте `./run.sh --no-producer`, откройте `/control`, загрузите фон, убедитесь, что он виден на `/`, затем перезапустите процесс и проверьте возврат `fallback.svg`.
+## Развертывание на двух VPS (Main Controller и Render Worker)
+
+Для масштабирования и изолирования тяжелой нагрузки рендеринга проект поддерживает распределенную архитектуру:
+- **Main Controller VPS**: запускает веб-интерфейс плеера (`127.0.0.1:8787`), OBS Studio в headless-режиме (через Xvfb), стриминг на Twitch и внутренний Render API (`10.10.0.1:8790`).
+- **Render Worker VPS**: отдельный сервер с CPU/GPU, выполняющий рендеринг через `danser-go` и отправляющий готовые MP4 по защищенному каналу на Controller.
+
+```
+       [ Twitch / YouTube RTMP ]
+                   ▲
+                   │
+      ┌────────────┴────────────┐
+      │   Main Controller VPS   │
+      │ ┌─────────────────────┐ │
+      │ │   Xvfb + Headless   │ │
+      │ │      OBS Studio     │ │
+      │ └──────────▲──────────┘ │
+      │            │ Browser    │
+      │ ┌──────────┴──────────┐ │
+      │ │  Web Player :8787   │ │
+      │ └──────────▲──────────┘ │
+      │ ┌──────────┴──────────┐ │
+      │ │  Render API :8790   │ │
+      │ └──────────▲──────────┘ │
+      └────────────┼────────────┘
+                   │ WireGuard VPN (10.10.0.0/24)
+                   │ Bearer Token + Lease Auth
+      ┌────────────┴────────────┐
+      │    Render Worker VPS    │
+      │ ┌─────────────────────┐ │
+      │ │  render_worker.py   │ │
+      │ └──────────▲──────────┘ │
+      │ ┌──────────┴──────────┐ │
+      │ │ danser-go (CPU/GPU) │ │
+      │ └─────────────────────┘ │
+      └─────────────────────────┘
+```
+
+### 1. Настройка приватной сети (WireGuard)
+
+Свяжите два VPS через WireGuard, чтобы внутренний Render API не был открыт в публичный интернет:
+- Controller VPN IP: `10.10.0.1/24`
+- Worker VPN IP: `10.10.0.2/24`
+
+Проверьте доступность: с Worker выполните `ping 10.10.0.1`.
+
+### 2. Установка и запуск Main Controller VPS
+
+1. Склонируйте репозиторий в `/opt/osu-stream-bot` (или запустите инсталлятор):
+   ```bash
+   sudo ./deploy/install.sh controller
+   ```
+   Скрипт создаст системного пользователя `osu-stream`, виртуальное окружение Python, установит `ffmpeg`, `xvfb`, `obs-studio`, `nginx` и скопирует systemd-юниты.
+
+2. Настройте конфигурацию `/etc/osu-stream/controller.env`:
+   ```bash
+   sudo nano /etc/osu-stream/controller.env
+   ```
+   Укажите:
+   - `RUN_MODE=controller`
+   - `RENDER_API_HOST=10.10.0.1` (IP вашего WireGuard интерфейса)
+   - `RENDER_API_PORT=8790`
+   - `RENDER_API_TOKEN=<сгенерированный длинный пароль, например: openssl rand -hex 32>`
+
+3. Запустите сервисы:
+   ```bash
+   sudo systemctl start xvfb osu-stream-controller obs
+   ```
+
+### 3. Установка и запуск Render Worker VPS
+
+1. Запустите скрипт установки:
+   ```bash
+   sudo ./deploy/install.sh worker
+   ```
+   Скрипт установит библиотеки Mesa/OpenGL, `ffmpeg`, скачает и настроит `danser-go 0.12.1`, создаст юнит `osu-stream-worker.service`.
+
+2. Настройте конфигурацию `/etc/osu-stream/worker.env`:
+   ```bash
+   sudo nano /etc/osu-stream/worker.env
+   ```
+   Укажите:
+   - `RUN_MODE=render-worker`
+   - `CONTROLLER_RENDER_URL=http://10.10.0.1:8790`
+   - `RENDER_API_TOKEN=<тот же самый токен, что и на Controller>`
+   - `WORKER_ID=render-worker-01`
+   - `DANSER_SETTINGS=stream-cpu`
+
+3. Запустите воркер:
+   ```bash
+   sudo systemctl start osu-stream-worker
+   ```
+
+### 4. Проверка статуса и логов
+
+На Controller:
+```bash
+sudo systemctl status osu-stream-controller
+sudo journalctl -u osu-stream-controller -f
+sudo journalctl -u obs -f
+```
+
+На Worker:
+```bash
+sudo systemctl status osu-stream-worker
+sudo journalctl -u osu-stream-worker -f
+```
+
+Вы увидите, как воркер запрашивает задачи через `POST /claim`, скачивает реплей, рендерит через `danser-go`, отправляет стримом артефакт в `/artifact` и отмечает задачу выполненной в `/complete`.
+
+### 5. Безопасная настройка Twitch Stream Key
+
+Ни в коем случае не сохраняйте Stream Key в git или общедоступных скриптах.
+
+**Рекомендуемый способ:**
+1. Настройте профиль OBS под пользователем `osu-stream`:
+   Конфигурация OBS хранится в `~osu-stream/.config/obs-studio/basic/profiles/`.
+2. В файле `service.json` (права `chmod 600`, владелец `osu-stream:osu-stream`):
+   ```json
+   {
+       "settings": {
+           "key": "live_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+           "server": "auto",
+           "service": "Twitch"
+       },
+       "type": "rtmp_custom"
+   }
+   ```
+3. Альтернативно можно использовать systemd credentials:
+   ```bash
+   systemd-creds set twitch-key "live_xxxx"
+   ```
+   и подключать его через `LoadCredential=` в `obs.service`.
+
+### 6. Настройка Nginx с Basic Auth для веб-панели
+
+Для защиты панели `/control` от несанкционированного доступа используйте готовый шаблон `deploy/nginx.conf`:
+```bash
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/osu-stream
+sudo htpasswd -c /etc/nginx/.htpasswd admin
+sudo ln -s /etc/nginx/sites-available/osu-stream /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+Панель управления будет доступна по адресу `http://<IP_ИЛИ_ДОМЕН>/control` с запросом логина и пароля, а плеер `http://127.0.0.1:8787/` останется доступен только локально для Browser Source в OBS.
 
 ## Протестированные аппаратные конфигурации
 
