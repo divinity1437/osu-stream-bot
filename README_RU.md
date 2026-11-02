@@ -413,7 +413,15 @@ python smoke_test_e2e.py
    - `WORKER_ID=render-worker-01`
    - `DANSER_SETTINGS=stream-cpu`
 
-3. Запустите воркер:
+3. **Синхронизация карт (Beatmaps)**:
+   > [!IMPORTANT]
+   > Свежеустановленный `danser-go` на Worker имеет пустую папку `tools/danser/songs/`. Так как `render_worker.py` скачивает только файл реплея (`.osr`), соответствующие карты (`.osz` / распакованные папки beatmap) должны присутствовать на диске Worker, иначе danser не сможет отрендерить видео.
+   > Скопируйте вашу коллекцию карт (или наиболее популярные карты) в:
+   > ```bash
+   > rsync -avz /path/to/local/Songs/ osu-stream@<WORKER_IP>:/opt/osu-stream-bot/tools/danser/songs/
+   > ```
+
+4. Запустите воркер:
    ```bash
    sudo systemctl start osu-stream-worker
    ```

@@ -1,7 +1,7 @@
 [Unit]
 Description=OBS Studio Headless Streamer
 After=network.target network-online.target xvfb.service osu-stream-controller.service
-Requires=xvfb.service
+BindsTo=xvfb.service
 Wants=osu-stream-controller.service
 
 [Service]
@@ -10,18 +10,47 @@ User=osu-stream
 Group=osu-stream
 WorkingDirectory=/opt/osu-stream-bot
 
-# Display and Software OpenGL rendering variables
+Environment="HOME=/home/osu-stream"
+Environment="XDG_CONFIG_HOME=/home/osu-stream/.config"
+Environment="XDG_CACHE_HOME=/home/osu-stream/.cache"
+Environment="XDG_DATA_HOME=/home/osu-stream/.local/share"
+Environment="XDG_RUNTIME_DIR=/run/osu-stream-obs"
+Environment="XAUTHORITY=/run/osu-stream-xvfb/Xauthority"
 Environment="DISPLAY=:99"
 Environment="LIBGL_ALWAYS_SOFTWARE=1"
 Environment="GALLIUM_DRIVER=llvmpipe"
+Environment="MESA_LOADER_DRIVER_OVERRIDE=llvmpipe"
+Environment="QT_QPA_PLATFORM=xcb"
 
+RuntimeDirectory=osu-stream-obs
+RuntimeDirectoryMode=0700
+
+# Wait until the controller HTTP endpoint is actually ready.
+ExecStartPre=/bin/sh -c 'for i in $$(seq 1 60); do /usr/bin/curl -fsS http://127.0.0.1:8787/health >/dev/null && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/obs --startstreaming --minimize-to-tray --disable-missing-files-check
 
-Restart=always
+Restart=on-failure
 RestartSec=10s
+UMask=0077
 
 LimitNOFILE=65536
 TimeoutStopSec=20s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/osu-stream/.config/obs-studio
+ReadWritePaths=/home/osu-stream/.cache/obs-studio
+ReadWritePaths=/home/osu-stream/.local/share/obs-studio
+ReadWritePaths=/tmp
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

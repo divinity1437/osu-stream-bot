@@ -9,21 +9,34 @@ User=osu-stream
 Group=osu-stream
 WorkingDirectory=/opt/osu-stream-bot
 EnvironmentFile=/etc/osu-stream/worker.env
-ExecStart=/opt/osu-stream-bot/venv/bin/python render_worker.py
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/opt/osu-stream-bot/venv/bin/python /opt/osu-stream-bot/app.py --check
+ExecStart=/opt/osu-stream-bot/venv/bin/python /opt/osu-stream-bot/render_worker.py
 
-Restart=always
+Restart=on-failure
 RestartSec=5s
+UMask=0077
 
 # Process & Resource limits
 LimitNOFILE=65536
 TimeoutStopSec=30s
 
 # Sandboxing & Security hardening
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 NoNewPrivileges=true
 PrivateTmp=true
 ReadWritePaths=/opt/osu-stream-bot
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

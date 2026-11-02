@@ -1,15 +1,31 @@
 [Unit]
 Description=X Virtual Framebuffer (Xvfb) Display Server
-After=network.target
 
 [Service]
 Type=simple
 User=osu-stream
 Group=osu-stream
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset
+Environment="XAUTHORITY=/run/osu-stream-xvfb/Xauthority"
+RuntimeDirectory=osu-stream-xvfb
+RuntimeDirectoryMode=0700
 
-Restart=always
+ExecStartPre=/bin/sh -c 'cookie=$$(/usr/bin/mcookie); /usr/bin/xauth -f /run/osu-stream-xvfb/Xauthority add :99 . "$$cookie"'
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -auth /run/osu-stream-xvfb/Xauthority -nolisten tcp +extension GLX +render -noreset
+ExecStartPost=/bin/sh -c 'for i in $$(seq 1 50); do /usr/bin/xdpyinfo -display :99 >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+
+Restart=on-failure
 RestartSec=3s
+UMask=0077
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

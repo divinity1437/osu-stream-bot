@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# Installer script for osu-stream-bot
+# Hardened Installer script for osu-stream-bot
 # Usage:
 #   sudo ./deploy/install.sh controller
 #   sudo ./deploy/install.sh worker
@@ -26,29 +26,60 @@ fi
 
 echo "===> Starting setup for mode: $MODE"
 
-# 1. Create system user and directories
-if ! id "$APP_USER" &>/dev/null; then
-    echo "===> Creating service user '$APP_USER'..."
-    useradd --system --shell /bin/bash --create-home --home-dir /home/"$APP_USER" "$APP_USER"
+# 1. Install base utilities needed for deployment
+apt-get update
+apt-get install -y rsync python3 python3-venv python3-pip
+
+# 2. Create system group and user with /usr/sbin/nologin
+if ! getent group "$APP_GROUP" >/dev/null; then
+    groupadd --system "$APP_GROUP"
 fi
 
-mkdir -p "$CONFIG_DIR"
-chmod 750 "$CONFIG_DIR"
-chown root:"$APP_GROUP" "$CONFIG_DIR"
+if ! id "$APP_USER" >/dev/null 2>&1; then
+    echo "===> Creating service user '$APP_USER'..."
+    useradd \
+        --system \
+        --gid "$APP_GROUP" \
+        --shell /usr/sbin/nologin \
+        --create-home \
+        --home-dir "/home/$APP_USER" \
+        "$APP_USER"
+fi
 
-# 2. Setup project folder in /opt/osu-stream-bot
+# Config directory must be root-only (mode 0700)
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+chown root:root "$CONFIG_DIR"
+
+# 3. Setup project folder in /opt/osu-stream-bot (clean rsync excluding secrets and runtime state)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ "$SCRIPT_DIR" != "$TARGET_DIR" ]]; then
-    echo "===> Copying codebase to $TARGET_DIR..."
+    echo "===> Syncing codebase to $TARGET_DIR (excluding runtime state and local secrets)..."
     mkdir -p "$TARGET_DIR"
-    rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='tests' "$SCRIPT_DIR/" "$TARGET_DIR/"
+    rsync -a \
+        --exclude='/.git/' \
+        --exclude='/venv/' \
+        --exclude='/__pycache__/' \
+        --exclude='/tests/' \
+        --exclude='/.env' \
+        --exclude='/.env.*' \
+        --exclude='/state.json' \
+        --exclude='/*.db' \
+        --exclude='/*.db-wal' \
+        --exclude='/*.db-shm' \
+        --exclude='/logs/***' \
+        --exclude='/video_queue/***' \
+        --exclude='/inbox/***' \
+        --exclude='/work/***' \
+        --exclude='/rejected/***' \
+        --exclude='/archive/***' \
+        --exclude='/submissions/***' \
+        --exclude='/tools/danser/***' \
+        "$SCRIPT_DIR/" "$TARGET_DIR/"
 fi
 
-# 3. Setup Python virtual environment
+# 4. Setup Python virtual environment
 echo "===> Setting up Python virtual environment..."
-apt-get update
-apt-get install -y python3 python3-venv python3-pip
-
 python3 -m venv "$TARGET_DIR/venv"
 "$TARGET_DIR/venv/bin/pip" install --upgrade pip
 if [[ -f "$TARGET_DIR/requirements.txt" ]]; then
@@ -59,15 +90,35 @@ fi
 # CONTROLLER SETUP
 # ------------------------------------------------------------------------------
 if [[ "$MODE" == "controller" ]]; then
-    echo "===> Installing Controller dependencies (ffmpeg, xvfb, obs-studio, nginx)..."
-    apt-get install -y ffmpeg xvfb obs-studio nginx apache2-utils wireguard
+    echo "===> Installing Controller dependencies..."
+    apt-get install -y \
+        ffmpeg \
+        xvfb \
+        xauth \
+        x11-utils \
+        obs-studio \
+        nginx \
+        apache2-utils \
+        wireguard \
+        curl \
+        libgl1-mesa-dri \
+        mesa-utils
 
-    # Setup controller environment file template if missing
+    # Create OBS configuration and cache directories
+    install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 \
+        "/home/$APP_USER/.config/obs-studio" \
+        "/home/$APP_USER/.cache/obs-studio" \
+        "/home/$APP_USER/.local/share/obs-studio"
+
+    # Setup controller environment file template (owner root:root, mode 0600)
     if [[ ! -f "$CONFIG_DIR/controller.env" ]]; then
-        cp "$TARGET_DIR/deploy/controller.env.example" "$CONFIG_DIR/controller.env"
+        install -o root -g root -m 0600 \
+            "$TARGET_DIR/deploy/controller.env.example" \
+            "$CONFIG_DIR/controller.env"
+        echo "===> Created $CONFIG_DIR/controller.env. Please edit it and set RENDER_API_TOKEN!"
+    else
+        chown root:root "$CONFIG_DIR/controller.env"
         chmod 600 "$CONFIG_DIR/controller.env"
-        chown "$APP_USER":"$APP_GROUP" "$CONFIG_DIR/controller.env"
-        echo "===> Created $CONFIG_DIR/controller.env. Please edit it with your settings!"
     fi
 
     # Install systemd units
@@ -81,29 +132,41 @@ if [[ "$MODE" == "controller" ]]; then
 
     echo "===> Controller installation complete!"
     echo "Next steps:"
-    echo "  1. Edit $CONFIG_DIR/controller.env"
+    echo "  1. Generate token (openssl rand -hex 32) and configure $CONFIG_DIR/controller.env"
     echo "  2. Configure WireGuard connection to Worker VPS"
     echo "  3. Configure OBS profile and Browser Source (http://127.0.0.1:8787/)"
-    echo "  4. Start services: systemctl start xvfb osu-stream-controller obs"
+    echo "  4. Setup Nginx with SSL (Certbot) and htpasswd using deploy/nginx.conf"
+    echo "  5. Start services: systemctl start xvfb osu-stream-controller obs"
 fi
 
 # ------------------------------------------------------------------------------
 # RENDER WORKER SETUP
 # ------------------------------------------------------------------------------
 if [[ "$MODE" == "worker" ]]; then
-    echo "===> Installing Worker dependencies (ffmpeg, mesa llvmpipe, unzip, curl)..."
+    echo "===> Installing Worker dependencies..."
     apt-get install -y ffmpeg libgl1-mesa-dri libgl1-mesa-glx mesa-utils unzip curl wireguard
 
-    # Install danser-go 0.12.1
-    echo "===> Installing danser-go (0.12.1)..."
-    su - "$APP_USER" -c "bash $TARGET_DIR/install-danser.sh"
+    # Ensure tools directory exists before running danser install script
+    mkdir -p "$TARGET_DIR/tools"
+    chown -R "$APP_USER":"$APP_GROUP" "$TARGET_DIR"
 
-    # Setup worker environment file template if missing
+    # Install danser-go 0.12.1 as service user
+    echo "===> Installing danser-go (0.12.1)..."
+    runuser -u "$APP_USER" -- bash "$TARGET_DIR/install-danser.sh"
+
+    # Ensure tools/danser/songs directory exists and has correct permissions
+    mkdir -p "$TARGET_DIR/tools/danser/songs"
+    chown -R "$APP_USER":"$APP_GROUP" "$TARGET_DIR/tools/danser/songs"
+
+    # Setup worker environment file template (owner root:root, mode 0600)
     if [[ ! -f "$CONFIG_DIR/worker.env" ]]; then
-        cp "$TARGET_DIR/deploy/worker.env.example" "$CONFIG_DIR/worker.env"
+        install -o root -g root -m 0600 \
+            "$TARGET_DIR/deploy/worker.env.example" \
+            "$CONFIG_DIR/worker.env"
+        echo "===> Created $CONFIG_DIR/worker.env. Please edit it and set RENDER_API_TOKEN!"
+    else
+        chown root:root "$CONFIG_DIR/worker.env"
         chmod 600 "$CONFIG_DIR/worker.env"
-        chown "$APP_USER":"$APP_GROUP" "$CONFIG_DIR/worker.env"
-        echo "===> Created $CONFIG_DIR/worker.env. Please edit it with your settings!"
     fi
 
     # Install systemd unit
@@ -115,11 +178,12 @@ if [[ "$MODE" == "worker" ]]; then
 
     echo "===> Render Worker installation complete!"
     echo "Next steps:"
-    echo "  1. Edit $CONFIG_DIR/worker.env"
-    echo "  2. Configure WireGuard connection to Controller VPS"
-    echo "  3. Start service: systemctl start osu-stream-worker"
+    echo "  1. Copy the RENDER_API_TOKEN from Controller into $CONFIG_DIR/worker.env"
+    echo "  2. IMPORTANT: Synchronize beatmaps into $TARGET_DIR/tools/danser/songs/"
+    echo "  3. Configure WireGuard connection to Controller VPS"
+    echo "  4. Start service: systemctl start osu-stream-worker"
 fi
 
-# Fix ownership
+# Fix ownership for runtime paths
 chown -R "$APP_USER":"$APP_GROUP" "$TARGET_DIR"
 echo "===> Done."
