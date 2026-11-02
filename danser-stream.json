@@ -21,7 +21,7 @@
   "Skin": {
     "CurrentSkin": "default",
     "FallbackSkin": "default",
-    "UseColorsFromSkin": false,
+    "UseColorsFromSkin": true,
     "UseBeatmapColors": false,
     "Cursor": {
       "UseSkinCursor": true

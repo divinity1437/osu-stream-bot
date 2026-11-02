@@ -255,6 +255,7 @@ class RuntimeState:
             "buffered": len(queue),
             "buffer_target": self.config.buffer_size,
             "queue": queue,
+            "run_mode": self.config.run_mode,
             "render_backend": self.config.render_backend,
             "developer_mode": self.config.developer_mode,
             "played_count": int(self.store.state.get("played_count", 0)),

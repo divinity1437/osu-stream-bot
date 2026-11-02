@@ -114,6 +114,8 @@ def configure_danser_profile(config: Any, skins_directory: Path) -> Path:
     parallax = object_section(background, "Parallax")
 
     general["OsuSkinsDir"] = str(skins_directory)
+    skin_settings["UseColorsFromSkin"] = True
+    skin_settings["UseBeatmapColors"] = False
     skin_cursor["UseSkinCursor"] = config.danser_use_skin_cursor
     dim["Normal"] = config.danser_background_dim_percent / 100
     parallax["Enabled"] = config.danser_parallax_enabled

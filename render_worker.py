@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -13,6 +14,7 @@ from typing import Any
 import aiohttp
 
 from config import Config, ROOT, load_env
+from danser_renderer import configure_danser_profile, discover_danser_skins, resolve_danser_skins_dir
 
 
 class StaleLeaseError(RuntimeError):
@@ -48,6 +50,34 @@ class RenderWorker:
         self.current_process: asyncio.subprocess.Process | None = None
         self.current_job_task: asyncio.Task | None = None
         self.stop_event = asyncio.Event()
+
+        self.skins_directory = resolve_danser_skins_dir(config)
+        self.settings_path = configure_danser_profile(config, self.skins_directory)
+        self.last_skin: str | None = None
+        available_skins = discover_danser_skins(self.skins_directory)
+        logging.info(
+            "Worker danser skins: %s (%d custom skin%s found)",
+            self.skins_directory,
+            len(available_skins),
+            "" if len(available_skins) == 1 else "s",
+        )
+
+    def _select_skin(self) -> str:
+        available = discover_danser_skins(self.skins_directory)
+        if self.config.danser_random_skin and available:
+            candidates = [skin for skin in available if skin != self.last_skin] or available
+            selected = secrets.choice(candidates)
+        elif self.config.danser_skin == "default" or self.config.danser_skin in available:
+            selected = self.config.danser_skin
+        else:
+            logging.warning(
+                "Configured danser skin %r was not found in %s; using default",
+                self.config.danser_skin,
+                self.skins_directory,
+            )
+            selected = "default"
+        self.last_skin = selected
+        return selected
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {}
@@ -180,18 +210,19 @@ class RenderWorker:
 
     async def _run_danser(self, replay_path: Path, output_mp4: Path) -> None:
         output_name = output_mp4.stem
+        selected_skin = self._select_skin()
         command = [
             str(self.config.danser_executable),
             f"-settings={self.config.danser_settings}",
             f"-replay={replay_path.resolve()}",
             f"-out={output_name}",
-            f"-skin={self.config.danser_skin}",
+            f"-skin={selected_skin}",
             "-nodbcheck",
             "-noupdatecheck",
             "-preciseprogress",
             "-quickstart",
         ]
-        logging.info("Running danser command: %s", " ".join(command))
+        logging.info("Running danser command with skin %r: %s", selected_skin, " ".join(command))
 
         env = os.environ.copy()
         library_path = str(self.config.danser_dir)

@@ -189,9 +189,13 @@
         byId('phase').textContent = data.phase;
         byId('buffer').textContent = `${data.buffered}/${data.buffer_target}`;
         byId('render').textContent = data.current_render_id || (data.render_backend === 'danser' && data.render_progress ? 'local' : 'none');
-        byId('backend').textContent = data.render_backend === 'ordr'
-          ? `o!rdr (${data.websocket_connected ? 'connected' : 'polling'})`
-          : 'danser (local)';
+        if (data.run_mode === 'controller') {
+          byId('backend').textContent = 'workers (remote)';
+        } else if (data.render_backend === 'ordr') {
+          byId('backend').textContent = `o!rdr (${data.websocket_connected ? 'connected' : 'polling'})`;
+        } else {
+          byId('backend').textContent = 'danser (local)';
+        }
         byId('error').textContent = data.last_error || '';
         byId('skip').disabled = !data.current_video;
 
