@@ -92,6 +92,7 @@ class Config:
     danser_parallax_speed_percent: int
     danser_render_timeout: int
     danser_max_map_bytes: int
+    danser_max_songs_bytes: int = 5 * 1024 * 1024 * 1024
     controller_url: str = ""
     render_api_token: str = ""
     max_artifact_bytes: int = 1024 * 1024 * 1024
@@ -183,6 +184,7 @@ class Config:
             danser_parallax_speed_percent=env_int("DANSER_PARALLAX_SPEED_PERCENT", 50),
             danser_render_timeout=env_int("DANSER_RENDER_TIMEOUT_SECONDS", 3600),
             danser_max_map_bytes=env_int("DANSER_MAX_MAP_MIB", 300) * 1024 * 1024,
+            danser_max_songs_bytes=env_int("DANSER_MAX_SONGS_MIB", 5120) * 1024 * 1024,
             controller_url=controller_url,
             render_api_token=render_api_token,
             max_artifact_bytes=env_int("MAX_ARTIFACT_MIB", 1024) * 1024 * 1024,

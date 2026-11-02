@@ -288,11 +288,69 @@ class BeatmapLibrary:
         self.songs_dir = config.danser_songs_dir
         self.work_dir = config.danser_dir / "map-downloads"
         self.max_archive_bytes = config.danser_max_map_bytes
+        self.max_songs_bytes = getattr(config, "danser_max_songs_bytes", 5 * 1024 * 1024 * 1024)
         self.songs_dir.mkdir(parents=True, exist_ok=True)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.lock = asyncio.Lock()
         self._index: dict[str, Path] = {}
         self._index_loaded = False
+
+    def prune_cache(self) -> int:
+        """Removes oldest beatmaps if songs directory exceeds max_songs_bytes."""
+        if not self.songs_dir.is_dir() or self.max_songs_bytes <= 0:
+            return 0
+
+        entries: list[tuple[float, int, Path]] = []
+        total_bytes = 0
+
+        for item in self.songs_dir.iterdir():
+            if item.name.startswith("."):
+                continue
+            try:
+                if item.is_dir():
+                    size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                    mtime = item.stat().st_mtime
+                elif item.is_file():
+                    size = item.stat().st_size
+                    mtime = item.stat().st_mtime
+                else:
+                    continue
+                entries.append((mtime, size, item))
+                total_bytes += size
+            except OSError:
+                continue
+
+        if total_bytes <= self.max_songs_bytes:
+            return 0
+
+        entries.sort(key=lambda x: x[0])
+        target_bytes = int(self.max_songs_bytes * 0.8)
+        freed_bytes = 0
+
+        for mtime, size, item in entries:
+            if total_bytes <= target_bytes:
+                break
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+                total_bytes -= size
+                freed_bytes += size
+                logging.info(
+                    "Pruned old beatmap from cache: %s (freed %.1f MiB)",
+                    item.name,
+                    size / (1024 * 1024),
+                )
+            except OSError as err:
+                logging.warning("Could not prune %s: %s", item, err)
+
+        logging.info(
+            "Songs cache pruned: freed %.1f MiB, current size: %.1f MiB",
+            freed_bytes / (1024 * 1024),
+            total_bytes / (1024 * 1024),
+        )
+        return freed_bytes
 
     def _scan_library(self) -> None:
         index: dict[str, Path] = {}
@@ -530,6 +588,11 @@ class BeatmapLibrary:
                         source_name,
                         archive.stat().st_size / 1048576,
                     )
+                    try:
+                        await asyncio.to_thread(self.prune_cache)
+                    except Exception as err:
+                        logging.warning("Error pruning songs cache: %s", err)
+
                     return BeatmapInfo(
                         checksum=info.checksum,
                         set_id=info.set_id,

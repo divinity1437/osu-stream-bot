@@ -49,6 +49,66 @@ class RenderWorker:
         self.current_job_task: asyncio.Task | None = None
         self.stop_event = asyncio.Event()
 
+    def prune_songs_cache(self) -> int:
+        """Removes oldest beatmaps if songs directory exceeds danser_max_songs_bytes."""
+        songs_dir = self.config.danser_songs_dir
+        max_bytes = self.config.danser_max_songs_bytes
+        if not songs_dir.is_dir() or max_bytes <= 0:
+            return 0
+
+        entries: list[tuple[float, int, Path]] = []
+        total_bytes = 0
+
+        for item in songs_dir.iterdir():
+            if item.name.startswith("."):
+                continue
+            try:
+                if item.is_dir():
+                    size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                    mtime = item.stat().st_mtime
+                elif item.is_file():
+                    size = item.stat().st_size
+                    mtime = item.stat().st_mtime
+                else:
+                    continue
+                entries.append((mtime, size, item))
+                total_bytes += size
+            except OSError:
+                continue
+
+        if total_bytes <= max_bytes:
+            return 0
+
+        # Sort oldest first (smallest mtime)
+        entries.sort(key=lambda x: x[0])
+        target_bytes = int(max_bytes * 0.8)  # Prune down to 80% of limit
+        freed_bytes = 0
+
+        for mtime, size, item in entries:
+            if total_bytes <= target_bytes:
+                break
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+                total_bytes -= size
+                freed_bytes += size
+                logging.info(
+                    "Pruned old beatmap from cache: %s (freed %.1f MiB)",
+                    item.name,
+                    size / (1024 * 1024),
+                )
+            except OSError as err:
+                logging.warning("Could not prune %s: %s", item, err)
+
+        logging.info(
+            "Songs cache pruned: freed %.1f MiB, current size: %.1f MiB",
+            freed_bytes / (1024 * 1024),
+            total_bytes / (1024 * 1024),
+        )
+        return freed_bytes
+
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {}
         if self.api_token:
@@ -478,6 +538,12 @@ class RenderWorker:
                 danser_temp,
                 ignore_errors=True,
             )
+
+            # Prune songs cache if size exceeds configured threshold
+            try:
+                await asyncio.to_thread(self.prune_songs_cache)
+            except Exception as err:
+                logging.warning("Error pruning songs cache: %s", err)
 
     async def run(self) -> None:
         logging.info("Starting Render Worker %s (controller=%s)", self.worker_id, self.controller_url)
