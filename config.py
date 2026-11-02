@@ -243,6 +243,8 @@ class Config:
             raise ValueError("DANSER_RENDER_TIMEOUT_SECONDS must be at least 60")
         if self.danser_max_map_bytes < 10 * 1024 * 1024:
             raise ValueError("DANSER_MAX_MAP_MIB must be at least 10")
+        if self.danser_max_songs_bytes < 512 * 1024 * 1024:
+            raise ValueError("DANSER_MAX_SONGS_MIB must be at least 512")
 
     def _validate_controller(self) -> None:
         if not self.render_api_token:
@@ -285,6 +287,8 @@ class Config:
             raise ValueError("DANSER_RENDER_TIMEOUT_SECONDS must be at least 60")
         if self.danser_max_map_bytes < 10 * 1024 * 1024:
             raise ValueError("DANSER_MAX_MAP_MIB must be at least 10")
+        if self.danser_max_songs_bytes < 512 * 1024 * 1024:
+            raise ValueError("DANSER_MAX_SONGS_MIB must be at least 512")
 
 
 def check_role_requirements(config: Config) -> None:

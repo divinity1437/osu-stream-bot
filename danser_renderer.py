@@ -295,10 +295,29 @@ class BeatmapLibrary:
         self._index: dict[str, Path] = {}
         self._index_loaded = False
 
-    def prune_cache(self) -> int:
+    def _cache_entry_for(self, path: Path) -> Path:
+        relative = path.resolve().relative_to(self.songs_dir.resolve())
+        if not relative.parts:
+            raise DanserError(f"Invalid beatmap cache path: {path}")
+        return self.songs_dir / relative.parts[0]
+
+    def _mark_used(self, path: Path) -> Path:
+        entry = self._cache_entry_for(path)
+        try:
+            os.utime(entry, None, follow_symlinks=False)
+        except OSError:
+            pass
+        return entry
+
+    def prune_cache(self, protected: set[Path] | None = None) -> int:
         """Removes oldest beatmaps if songs directory exceeds max_songs_bytes."""
         if not self.songs_dir.is_dir() or self.max_songs_bytes <= 0:
             return 0
+
+        protected_resolved = {
+            path.resolve()
+            for path in (protected or set())
+        }
 
         entries: list[tuple[float, int, Path]] = []
         total_bytes = 0
@@ -330,11 +349,18 @@ class BeatmapLibrary:
         for mtime, size, item in entries:
             if total_bytes <= target_bytes:
                 break
+            if item.resolve() in protected_resolved:
+                continue
             try:
                 if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
+                    shutil.rmtree(item)
                 else:
                     item.unlink(missing_ok=True)
+
+                if item.exists() or item.is_symlink():
+                    logging.warning("Cache entry still exists after removal: %s", item)
+                    continue
+
                 total_bytes -= size
                 freed_bytes += size
                 logging.info(
@@ -367,6 +393,7 @@ class BeatmapLibrary:
             await asyncio.to_thread(self._scan_library)
         path = self._index.get(checksum)
         if path and path.is_file():
+            await asyncio.to_thread(self._mark_used, path)
             return await asyncio.to_thread(_osu_metadata, path, checksum)
         return None
 
@@ -580,8 +607,13 @@ class BeatmapLibrary:
                 archive = self.work_dir / f"{info.set_id}-{uuid.uuid4().hex}.osz.part"
                 try:
                     await self._download(url, archive, source_name)
-                    path = await asyncio.to_thread(self._extract, archive, info.set_id, checksum)
-                    await asyncio.to_thread(self._scan_library)
+                    path = await asyncio.to_thread(
+                        self._extract,
+                        archive,
+                        info.set_id,
+                        checksum,
+                    )
+                    protected_entry = await asyncio.to_thread(self._mark_used, path)
                     logging.info(
                         "Downloaded beatmap set %d through %s (%.1f MiB)",
                         info.set_id,
@@ -589,9 +621,18 @@ class BeatmapLibrary:
                         archive.stat().st_size / 1048576,
                     )
                     try:
-                        await asyncio.to_thread(self.prune_cache)
+                        await asyncio.to_thread(
+                            self.prune_cache,
+                            {protected_entry},
+                        )
                     except Exception as err:
                         logging.warning("Error pruning songs cache: %s", err)
+
+                    if not path.is_file():
+                        raise DanserError(
+                            "Current beatmap disappeared during cache pruning"
+                        )
+                    await asyncio.to_thread(self._scan_library)
 
                     return BeatmapInfo(
                         checksum=info.checksum,
