@@ -37,9 +37,11 @@ def test_render_worker_mode_validation(monkeypatch):
         Config.from_env(root=ROOT)
 
     monkeypatch.setenv("CONTROLLER_URL", "http://127.0.0.1:8787")
+    monkeypatch.setenv("RENDER_API_TOKEN", "test-token")
     config = Config.from_env(root=ROOT)
     assert config.run_mode == "render-worker"
     assert config.controller_url == "http://127.0.0.1:8787"
+    assert config.render_api_token == "test-token"
 
 
 def test_existing_replay_header_parsing():

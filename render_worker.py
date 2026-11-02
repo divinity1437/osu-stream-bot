@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import asyncio
-import json
 import logging
 import os
 import shutil
 import signal
-import sys
+import socket
 import time
 import uuid
 from pathlib import Path
@@ -21,10 +20,25 @@ class StaleLeaseError(RuntimeError):
     pass
 
 
+class RetryableUploadError(RuntimeError):
+    pass
+
+
+RETRYABLE_UPLOAD_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+
+
+def is_valid_uuid(val: str) -> bool:
+    try:
+        uuid_obj = uuid.UUID(str(val))
+        return str(uuid_obj) == str(val).lower()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 class RenderWorker:
     def __init__(self, config: Config):
         self.config = config
-        self.worker_id = config.worker_id or f"worker-{os.uname().nodename}"
+        self.worker_id = config.worker_id or f"worker-{socket.gethostname()}"
         self.controller_url = config.controller_url.rstrip("/")
         self.api_token = config.render_api_token
         self.heartbeat_interval = config.render_heartbeat_seconds
@@ -44,16 +58,41 @@ class RenderWorker:
         return headers
 
     async def _kill_current_process(self) -> None:
-        if self.current_process and self.current_process.returncode is None:
-            logging.warning("Terminating active danser process...")
-            self.current_process.terminate()
+        process = self.current_process
+        if process is None:
+            return
+        await self._terminate_process(process)
+        if self.current_process is process:
+            self.current_process = None
+
+    async def _terminate_process(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        if process.returncode is not None:
+            await process.wait()
+            return
+
+        def signal_process(force: bool) -> None:
             try:
-                await asyncio.wait_for(self.current_process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logging.warning("danser did not exit in 5s; killing...")
-                self.current_process.kill()
-                await self.current_process.wait()
-            logging.info("danser process killed.")
+                if os.name == "posix":
+                    signum = signal.SIGKILL if force else signal.SIGTERM
+                    os.killpg(process.pid, signum)
+                elif force:
+                    process.kill()
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                pass
+
+        logging.warning("Terminating active danser process tree...")
+        signal_process(force=False)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logging.warning("danser did not exit in 5s; killing process tree...")
+            signal_process(force=True)
+            await process.wait()
 
     async def _heartbeat_loop(
         self,
@@ -61,13 +100,16 @@ class RenderWorker:
         job_id: str,
         lease_token: str,
         job_task: asyncio.Task,
+        lease_seconds: float,
     ) -> None:
         url = f"{self.controller_url}/internal/v1/render/jobs/{job_id}/heartbeat"
         payload = {"lease_token": lease_token}
+        lease_deadline = time.monotonic() + lease_seconds
 
         while True:
             try:
                 await asyncio.sleep(self.heartbeat_interval)
+                request_started = time.monotonic()
                 async with session.post(
                     url,
                     json=payload,
@@ -75,18 +117,37 @@ class RenderWorker:
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
+                        # Controller renewed the lease while this request was
+                        # in flight, so request_started is conservative.
+                        lease_deadline = request_started + lease_seconds
                         logging.debug("Heartbeat sent for job %s", job_id)
-                    elif resp.status == 410:
-                        logging.error("Heartbeat returned 410 Gone for job %s! Lease is stale.", job_id)
-                        await self._kill_current_process()
+                        continue
+                    elif resp.status in {400, 401, 403, 404, 409, 410}:
+                        logging.error(
+                            "Heartbeat permanently rejected for job %s: HTTP %d",
+                            job_id,
+                            resp.status,
+                        )
                         job_task.cancel()
                         return
                     else:
-                        logging.warning("Heartbeat returned unexpected HTTP %d: %s", resp.status, await resp.text())
+                        logging.warning(
+                            "Heartbeat returned transient HTTP %d: %s",
+                            resp.status,
+                            await resp.text(),
+                        )
             except asyncio.CancelledError:
-                break
+                return
             except Exception as error:
                 logging.warning("Heartbeat request failed for job %s: %s", job_id, error)
+
+            if time.monotonic() >= lease_deadline:
+                logging.error(
+                    "Controller could not renew lease for job %s before its deadline",
+                    job_id,
+                )
+                job_task.cancel()
+                return
 
     async def _download_replay(
         self,
@@ -138,35 +199,58 @@ class RenderWorker:
             library_path += os.pathsep + env["LD_LIBRARY_PATH"]
         env["LD_LIBRARY_PATH"] = library_path
 
-        self.current_process = await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *command,
             cwd=self.config.danser_dir,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=(os.name == "posix"),
         )
+        self.current_process = process
 
-        try:
-            assert self.current_process.stdout is not None
-            while line := await self.current_process.stdout.readline():
+        async def consume_output() -> None:
+            assert process.stdout is not None
+            while line := await process.stdout.readline():
                 decoded = line.decode("utf-8", "replace").rstrip()
                 if "Progress:" in decoded:
                     logging.info("danser: %s", decoded)
                 elif "Error" in decoded or "panic" in decoded.lower():
                     logging.warning("danser: %s", decoded)
 
+        reader_task = asyncio.create_task(
+            consume_output(),
+            name=f"danser-output-{output_name}",
+        )
+        timed_out = False
+        try:
             await asyncio.wait_for(
-                self.current_process.wait(),
+                process.wait(),
                 timeout=self.config.danser_render_timeout,
             )
         except asyncio.TimeoutError:
-            await self._kill_current_process()
-            raise RuntimeError(f"danser render timed out after {self.config.danser_render_timeout}s")
+            timed_out = True
         finally:
-            process = self.current_process
-            self.current_process = None
-            if process and process.returncode is not None and process.returncode != 0:
-                raise RuntimeError(f"danser process exited with code {process.returncode}")
+            if process.returncode is None:
+                await asyncio.shield(self._terminate_process(process))
+
+            try:
+                await asyncio.wait_for(reader_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                reader_task.cancel()
+                await asyncio.gather(reader_task, return_exceptions=True)
+
+            if self.current_process is process:
+                self.current_process = None
+
+        if timed_out:
+            raise RuntimeError(
+                f"danser render timed out after {self.config.danser_render_timeout}s"
+            )
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"danser process exited with code {process.returncode}"
+            )
 
     async def _validate_mp4(self, path: Path) -> None:
         if not path.is_file() or path.stat().st_size == 0:
@@ -188,7 +272,20 @@ class RenderWorker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=60,
+            )
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
+        except asyncio.TimeoutError as error:
+            process.kill()
+            await process.wait()
+            raise RuntimeError("ffprobe validation timed out") from error
+
         if process.returncode != 0:
             raise RuntimeError(f"ffprobe validation failed: {stderr.decode('utf-8', 'replace')}")
 
@@ -214,7 +311,14 @@ class RenderWorker:
                 while chunk := await asyncio.to_thread(f.read, 1024 * 1024):
                     yield chunk
 
-        max_retries = 3
+        file_size = video_path.stat().st_size
+        minimum_bytes_per_second = 128 * 1024
+        total_timeout = max(
+            1800.0,
+            file_size / minimum_bytes_per_second + 300.0,
+        )
+
+        max_retries = 5
         for attempt in range(1, max_retries + 1):
             logging.info("Uploading artifact to controller (attempt %d/%d)...", attempt, max_retries)
             try:
@@ -222,20 +326,34 @@ class RenderWorker:
                     url,
                     data=file_sender(),
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=1800, sock_read=120),
+                    timeout=aiohttp.ClientTimeout(
+                        total=total_timeout,
+                        sock_connect=30,
+                        sock_read=120,
+                    ),
                 ) as resp:
                     if resp.status == 200:
                         logging.info("Artifact successfully uploaded for job %s", job_id)
                         return
-                    elif resp.status == 410:
+                    if resp.status == 410:
                         raise StaleLeaseError("Lease expired during artifact upload")
-                    else:
-                        text = await resp.text()
-                        raise RuntimeError(f"Artifact upload rejected with HTTP {resp.status}: {text}")
-            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+
+                    text = await resp.text()
+                    if resp.status in RETRYABLE_UPLOAD_STATUSES:
+                        raise RetryableUploadError(
+                            f"Transient HTTP {resp.status}: {text}"
+                        )
+                    raise RuntimeError(
+                        f"Artifact upload rejected with HTTP {resp.status}: {text}"
+                    )
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                RetryableUploadError,
+            ) as error:
                 if attempt == max_retries:
                     raise RuntimeError(f"Artifact upload failed after {max_retries} attempts: {error}") from error
-                backoff = 2 ** attempt
+                backoff = min(30, 2 ** attempt)
                 logging.warning("Upload network error: %s. Retrying in %ds...", error, backoff)
                 await asyncio.sleep(backoff)
 
@@ -283,6 +401,10 @@ class RenderWorker:
     async def _process_job(self, session: aiohttp.ClientSession, job: dict[str, Any]) -> None:
         job_id = job["id"]
         lease_token = job["lease_token"]
+        if not is_valid_uuid(job_id) or not is_valid_uuid(lease_token):
+            logging.error("Invalid job ID or lease token format: job_id=%s, lease_token=%s", job_id, lease_token)
+            return
+
         logging.info("Claimed job %s (attempts=%d)", job_id, job.get("attempts", 0))
 
         replay_path = self.work_dir / f"{job_id}.osr"
@@ -292,11 +414,20 @@ class RenderWorker:
         assert current_task is not None
 
         heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(session, job_id, lease_token, current_task),
+            self._heartbeat_loop(
+                session,
+                job_id,
+                lease_token,
+                current_task,
+                float(job.get("lease_seconds", 60.0)),
+            ),
             name=f"heartbeat-{job_id}",
         )
 
-        completed_or_failed = False
+        async def stop_heartbeat() -> None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
         try:
             # 1. Download replay
             await self._download_replay(session, job_id, replay_path)
@@ -312,8 +443,8 @@ class RenderWorker:
             await self._upload_artifact(session, job_id, lease_token, output_mp4)
 
             # 5. Complete
+            await stop_heartbeat()
             await self._send_complete(session, job_id, lease_token)
-            completed_or_failed = True
         except asyncio.CancelledError:
             logging.warning("Job %s was cancelled (e.g. shutdown or lease expired)", job_id)
             raise
@@ -321,18 +452,32 @@ class RenderWorker:
             logging.error("Job %s aborted due to stale lease: %s", job_id, error)
         except Exception as error:
             logging.exception("Error processing job %s: %s", job_id, error)
+            await stop_heartbeat()
             await self._send_fail(session, job_id, lease_token, str(error))
-            completed_or_failed = True
         finally:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            await stop_heartbeat()
             await self._kill_current_process()
 
-            if completed_or_failed:
-                replay_path.unlink(missing_ok=True)
-                output_mp4.unlink(missing_ok=True)
-                replay_part = replay_path.with_suffix(".part")
-                replay_part.unlink(missing_ok=True)
+            replay_part = replay_path.with_suffix(".part")
+            for path in (replay_path, replay_part, output_mp4):
+                try:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                except OSError:
+                    logging.warning(
+                        "Could not remove worker file %s",
+                        path,
+                        exc_info=True,
+                    )
+
+            danser_temp = (
+                self.config.danser_output_dir
+                / f"{output_mp4.stem}_temp"
+            )
+            await asyncio.to_thread(
+                shutil.rmtree,
+                danser_temp,
+                ignore_errors=True,
+            )
 
     async def run(self) -> None:
         logging.info("Starting Render Worker %s (controller=%s)", self.worker_id, self.controller_url)

@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,7 +181,7 @@ class Config:
             controller_url=controller_url,
             render_api_token=render_api_token,
             max_artifact_bytes=env_int("MAX_ARTIFACT_MIB", 1024) * 1024 * 1024,
-            worker_id=os.getenv("WORKER_ID", f"worker-{os.uname().nodename}").strip(),
+            worker_id=os.getenv("WORKER_ID", f"worker-{socket.gethostname()}").strip(),
             render_heartbeat_seconds=env_float("RENDER_HEARTBEAT_SECONDS", 15.0),
         )
 
@@ -253,6 +254,10 @@ class Config:
     def _validate_render_worker(self) -> None:
         if not self.controller_url:
             raise ValueError("CONTROLLER_URL is required when RUN_MODE is 'render-worker'")
+        if not self.render_api_token:
+            raise ValueError("RENDER_API_TOKEN is required when RUN_MODE is 'render-worker'")
+        if not 1 <= self.render_heartbeat_seconds <= 20:
+            raise ValueError("RENDER_HEARTBEAT_SECONDS must be between 1 and 20")
         if not self.danser_settings or "/" in self.danser_settings or "\\" in self.danser_settings:
             raise ValueError("DANSER_SETTINGS must be a simple settings profile name")
         if not self.danser_skins_dir:

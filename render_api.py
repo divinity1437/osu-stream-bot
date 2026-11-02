@@ -106,6 +106,7 @@ class RenderApi:
         if job is None:
             return web.Response(status=204)
 
+        job["lease_seconds"] = 60.0
         return web.json_response(job, status=200)
 
     async def handle_heartbeat(self, request: web.Request) -> web.Response:
