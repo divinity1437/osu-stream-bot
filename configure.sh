@@ -60,6 +60,10 @@ define_setting() {
     MAX_VALUES["$key"]=$maximum
 }
 
+define_setting "RUN_MODE" "standalone" "enum" \
+    "Operation mode" \
+    "standalone: all-in-one local stream; controller: multi-node coordinator & web queue; render-worker: distributed danser rendering node."
+
 define_setting "RENDER_BACKEND" "ordr" "enum" \
     "Render backend" \
     "ordr sends replays to the hosted o!rdr service; danser renders locally on this computer."
@@ -131,6 +135,9 @@ define_setting "DANSER_RENDER_TIMEOUT_SECONDS" "3600" "integer" \
 define_setting "DANSER_MAX_MAP_MIB" "300" "integer" \
     "danser beatmap limit" \
     "Maximum downloaded beatmap archive size in MiB." "10" ""
+define_setting "DANSER_MAX_SONGS_MIB" "5120" "integer" \
+    "danser songs directory quota" \
+    "Maximum size of tools/danser/songs in MiB (minimum: 512). Old beatmaps are pruned when exceeded." "512" ""
 
 define_setting "OSU_REPLAY_URL" "https://api.osuokayu.pw/v1/get_replay" "url" \
     "Replay download API" \
@@ -196,6 +203,28 @@ define_setting "DISCORD_MAX_FILE_MIB" "10" "integer" \
     "Discord file limit" \
     "Maximum size of a Discord .osr attachment in MiB." "1" ""
 
+define_setting "RENDER_API_TOKEN" "" "secret" \
+    "Cluster API authentication token" \
+    "Bearer token used between Controller and Workers. Required when RUN_MODE is controller or render-worker."
+define_setting "RENDER_API_HOST" "127.0.0.1" "text" \
+    "Controller internal API host" \
+    "Host/IP on Controller for internal worker API (e.g. 127.0.0.1 or WireGuard IP). Do not expose publicly!"
+define_setting "RENDER_API_PORT" "8790" "integer" \
+    "Controller internal API port" \
+    "Port on Controller for internal worker API." "1" "65535"
+define_setting "MAX_ARTIFACT_MIB" "1024" "integer" \
+    "Max render artifact size (MiB)" \
+    "Maximum size in MiB of a completed video artifact uploaded to the controller." "10" ""
+define_setting "CONTROLLER_URL" "" "optional_text" \
+    "Controller API URL (for worker)" \
+    "URL of Controller internal API (for example http://127.0.0.1:8790 or http://10.10.0.1:8790). Required on worker."
+define_setting "WORKER_ID" "" "optional_text" \
+    "Worker identifier" \
+    "Custom unique identifier for this render worker node (leave empty for worker-<hostname>)."
+define_setting "RENDER_HEARTBEAT_SECONDS" "15.0" "decimal" \
+    "Worker lease heartbeat interval" \
+    "Seconds between worker lease heartbeats while rendering a replay (range: 1.0 to 20.0)."
+
 ORDR_KEYS=(
     ORDR_DEVELOPER_MODE ORDR_API_KEY ORDR_SKIN ORDR_CUSTOM_SKIN
     ORDR_DT_SKIN ORDR_DT_CUSTOM_SKIN ORDR_RESOLUTION
@@ -205,7 +234,7 @@ DANSER_KEYS=(
     DANSER_DIR DANSER_SETTINGS DANSER_SKINS_DIR DANSER_SKIN DANSER_RANDOM_SKIN DANSER_USE_SKIN_CURSOR
     DANSER_REPLAY_OVERLAY DANSER_BACKGROUND_DIM_PERCENT DANSER_PARALLAX_ENABLED
     DANSER_PARALLAX_AMOUNT_PERCENT DANSER_PARALLAX_SPEED_PERCENT
-    DANSER_RENDER_TIMEOUT_SECONDS DANSER_MAX_MAP_MIB
+    DANSER_RENDER_TIMEOUT_SECONDS DANSER_MAX_MAP_MIB DANSER_MAX_SONGS_MIB
 )
 SOURCE_KEYS=(
     OSU_REPLAY_URL OSU_SCORES_URL SCORE_ID_MIN SCORE_ID_MAX
@@ -216,6 +245,10 @@ WEB_KEYS=(WEB_HOST WEB_PORT MAX_UPLOAD_MIB MAX_BACKGROUND_MIB PLAYER_VOLUME)
 DISCORD_KEYS=(
     DISCORD_ENABLED DISCORD_TOKEN DISCORD_GUILD_ID DISCORD_CHANNEL_ID
     DISCORD_QUEUE_LIMIT DISCORD_USER_COOLDOWN_SECONDS DISCORD_MAX_FILE_MIB
+)
+CLUSTER_KEYS=(
+    RUN_MODE RENDER_API_TOKEN RENDER_API_HOST RENDER_API_PORT MAX_ARTIFACT_MIB
+    CONTROLLER_URL WORKER_ID RENDER_HEARTBEAT_SECONDS
 )
 
 trim_whitespace() {
@@ -372,6 +405,7 @@ validate_value() {
             ;;
         enum)
             case "$key:$value" in
+                RUN_MODE:standalone|RUN_MODE:controller|RUN_MODE:render-worker|\
                 RENDER_BACKEND:ordr|RENDER_BACKEND:danser|\
                 ORDR_RESOLUTION:960x540|ORDR_RESOLUTION:1280x720|\
                 ORDR_RESOLUTION:1920x1080|ORDR_RESOLUTION:3840x2160) ;;
@@ -439,6 +473,9 @@ validate_value() {
                 return 1
             fi
             ;;
+        optional_text)
+            return 0
+            ;;
         *)
             VALIDATION_ERROR="unknown setting type: $type"
             return 1
@@ -463,6 +500,15 @@ validate_all() {
         && [[ ${VALUES[SCORE_ID_MAX]} != "0" ]] \
         && decimal_integer_less "${VALUES[SCORE_ID_MAX]}" "${VALUES[SCORE_ID_MIN]}"; then
         VALIDATION_ERRORS+=("SCORE_ID_MAX: must be 0 or greater than or equal to SCORE_ID_MIN")
+    fi
+
+    if [[ ${VALUES[RUN_MODE]} == "controller" ]]; then
+        [[ -n "${VALUES[RENDER_API_TOKEN]}" ]] || VALIDATION_ERRORS+=("RENDER_API_TOKEN: required when RUN_MODE is controller")
+    fi
+
+    if [[ ${VALUES[RUN_MODE]} == "render-worker" ]]; then
+        [[ -n "${VALUES[CONTROLLER_URL]}" ]] || VALIDATION_ERRORS+=("CONTROLLER_URL: required when RUN_MODE is render-worker")
+        [[ -n "${VALUES[RENDER_API_TOKEN]}" ]] || VALIDATION_ERRORS+=("RENDER_API_TOKEN: required when RUN_MODE is render-worker")
     fi
 
     if bool_is_true "${VALUES[DISCORD_ENABLED]}"; then
@@ -799,6 +845,16 @@ edit_enum() {
     local key=$1
     local choice
     case "$key" in
+        RUN_MODE)
+            if choice=$(ui_menu "${LABELS[$key]}" \
+                "${HINTS[$key]}\n\nCurrent value: $(display_value "$key")" \
+                "standalone" "All-in-one local stream instance (single machine)" \
+                "controller" "Controller node (web queue, player, worker API)" \
+                "render-worker" "Render worker node (dedicated danser machine)"); then
+                VALUES["$key"]=$choice
+                DIRTY=1
+            fi
+            ;;
         RENDER_BACKEND)
             if choice=$(ui_menu "${LABELS[$key]}" \
                 "${HINTS[$key]}\n\nCurrent value: $(display_value "$key")" \
@@ -1103,6 +1159,7 @@ main_menu() {
 
         if ! choice=$(ui_menu "Project configuration" \
             "$state\n\nSelect a section. Every setting includes a detailed hint." \
+            "0" "Operation mode [$(display_value RUN_MODE)]" \
             "1" "Render backend [$(display_value RENDER_BACKEND)]" \
             "2" "Hosted renderer o!rdr" \
             "3" "Local danser renderer" \
@@ -1110,9 +1167,10 @@ main_menu() {
             "5" "Queue and playback" \
             "6" "Web player and uploads" \
             "7" "Discord bot [$(display_value DISCORD_ENABLED)]" \
+            "C" "Controller & Worker Cluster" \
             "8" "Show all current values" \
             "9" "Restore values from .env.example" \
-            "C" "Save and run ./check.sh" \
+            "K" "Save and run ./check.sh" \
             "S" "Save .env and exit" \
             "Q" "Exit without saving"); then
             if confirm_exit_without_save; then
@@ -1122,6 +1180,7 @@ main_menu() {
         fi
 
         case "$choice" in
+            0) edit_setting RUN_MODE ;;
             1) edit_setting RENDER_BACKEND ;;
             2) open_category "o!rdr" "Hosted o!rdr renderer settings." "${ORDR_KEYS[@]}" ;;
             3) open_category "danser" "Local danser renderer settings." "${DANSER_KEYS[@]}" ;;
@@ -1129,9 +1188,10 @@ main_menu() {
             5) open_category "Queue" "Buffer, producer, and rendered video storage settings." "${QUEUE_KEYS[@]}" ;;
             6) open_category "Web" "Server address, upload limits, and initial volume." "${WEB_KEYS[@]}" ;;
             7) open_category "Discord" "Accept .osr files through Discord slash commands." "${DISCORD_KEYS[@]}" ;;
+            C|c) open_category "Cluster" "Multi-node Controller & Render Worker cluster settings." "${CLUSTER_KEYS[@]}" ;;
             8) show_summary ;;
             9) reset_to_defaults ;;
-            C|c)
+            K|k)
                 if save_from_tui; then
                     run_project_check
                 fi
