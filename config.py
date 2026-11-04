@@ -172,7 +172,7 @@ class Config:
             ),
             danser_songs_dir=danser_dir / "songs",
             danser_output_dir=danser_dir / "videos",
-            danser_settings=os.getenv("DANSER_SETTINGS", "stream-cpu").strip(),
+            danser_settings=os.getenv("DANSER_SETTINGS", "stream").strip(),
             danser_skins_dir=os.getenv("DANSER_SKINS_DIR", "auto").strip(),
             danser_skin=os.getenv("DANSER_SKIN", "default").strip(),
             danser_random_skin=env_bool("DANSER_RANDOM_SKIN", False),

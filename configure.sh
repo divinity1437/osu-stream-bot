@@ -99,9 +99,9 @@ define_setting "ORDR_MIN_SUBMIT_INTERVAL_SECONDS" "0" "decimal" \
 define_setting "DANSER_DIR" "tools/danser" "text" \
     "danser directory" \
     "Path to the local danser installation. Relative paths are resolved from the project directory."
-define_setting "DANSER_SETTINGS" "stream-cpu" "profile" \
+define_setting "DANSER_SETTINGS" "stream" "profile" \
     "danser settings profile" \
-    "Simple JSON profile name without a path or extension. Use stream-cpu for portable libx264 encoding; stream enables VAAPI hardware encoding on Linux; stream-amf enables AMD AMF hardware encoding on Windows (Vega/Radeon)."
+    "JSON profile name without path or extension (default: stream). Use menu option [D] to auto-detect system capabilities and generate an optimal profile."
 define_setting "DANSER_SKINS_DIR" "auto" "skin_dir" \
     "osu! skins directory" \
     "Use auto to detect common osu!stable/Wine locations, or enter an explicit directory containing skin folders."
@@ -1109,11 +1109,43 @@ save_from_tui() {
     return 0
 }
 
-run_project_check() {
-    local temp status
-    temp=$(mktemp "${TMPDIR:-/tmp}/osu-stream-check.XXXXXX")
+autodetect_danser_profile() {
+    local temp output status
+    temp=$(mktemp "${TMPDIR:-/tmp}/osu-danser-detect.XXXXXX")
     ACTIVE_TMP=$temp
+
     set +e
+    ./venv/bin/python -c "
+import json
+from pathlib import Path
+from danser_renderer import generate_optimal_danser_profile
+
+target = Path('tools/danser/settings/stream.json')
+result = generate_optimal_danser_profile(target)
+print('--- Danser Profile Autodetect ---')
+print(f'Target Profile:  {result[\"path\"]}')
+print(f'Detected Encoder: {result[\"encoder\"]}')
+print(f'Mode:             {result[\"mode\"]}')
+print(f'Total CPU Cores:  {result[\"cpu_count\"]}')
+print(f'Virtual Machine:  {result[\"is_vm\"]}')
+print('\nProfile tools/danser/settings/stream.json has been generated successfully.')
+" > "$temp" 2>&1
+    status=$?
+    set -e
+
+    if (( status == 0 )); then
+        VALUES["DANSER_SETTINGS"]="stream"
+        DIRTY=1
+        ui_textbox "Danser Profile Auto-Configuration" "$temp"
+    else
+        ui_textbox "Auto-Configuration Failed" "$temp"
+    fi
+
+    rm -f -- "$temp"
+    ACTIVE_TMP=""
+}
+
+run_project_check() {
     ./check.sh > "$temp" 2>&1
     status=$?
     set -e
@@ -1171,6 +1203,7 @@ main_menu() {
             "6" "Web player and uploads" \
             "7" "Discord bot [$(display_value DISCORD_ENABLED)]" \
             "C" "Controller & Worker Cluster" \
+            "D" "Auto-detect system & configure danser profile" \
             "8" "Show all current values" \
             "9" "Restore values from .env.example" \
             "K" "Save and run ./check.sh" \
@@ -1192,6 +1225,7 @@ main_menu() {
             6) open_category "Web" "Server address, upload limits, and initial volume." "${WEB_KEYS[@]}" ;;
             7) open_category "Discord" "Accept .osr files through Discord slash commands." "${DISCORD_KEYS[@]}" ;;
             C|c) open_category "Cluster" "Multi-node Controller & Render Worker cluster settings." "${CLUSTER_KEYS[@]}" ;;
+            D|d) autodetect_danser_profile ;;
             8) show_summary ;;
             9) reset_to_defaults ;;
             K|k)

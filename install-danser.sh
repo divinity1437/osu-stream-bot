@@ -28,7 +28,6 @@ if [[ -d tools/danser/ffmpeg ]]; then
 fi
 mkdir -p tools/danser/settings tools/danser/songs tools/danser/skins tools/danser/replays tools/danser/videos
 cp danser-stream.json tools/danser/settings/stream.json
-cp danser-stream-cpu.json tools/danser/settings/stream-cpu.json
-cp danser-stream-amf.json tools/danser/settings/stream-amf.json
+cp danser-stream.json tools/danser/settings/stream-cpu.json
 
 echo "danser ${version} installed in tools/danser"

@@ -7,6 +7,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import time
 import uuid
 import zipfile
@@ -86,9 +87,98 @@ def resolve_danser_skins_dir(config: Any) -> Path:
     return local_directory.resolve()
 
 
+def generate_optimal_danser_profile(
+    target_path: Path,
+    template_path: Path | None = None,
+) -> dict[str, Any]:
+    """Generate an optimal danser profile with system autodection."""
+    base_template = template_path or (Path(__file__).resolve().parent / "danser-stream.json")
+    if not base_template.is_file():
+        # Fallback to local danser stream.json
+        candidate = target_path.parent / "stream.json"
+        if candidate.is_file():
+            base_template = candidate
+
+    if base_template.is_file():
+        try:
+            payload = json.loads(base_template.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    else:
+        payload = {}
+
+    recording = payload.setdefault("Recording", {})
+    cpu_count = os.cpu_count() or 4
+
+    is_vm = False
+    try:
+        proc = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip() not in ("", "none"):
+            is_vm = True
+    except Exception:
+        pass
+
+    # Check for dedicated NVIDIA GPU with working driver
+    has_nvidia = False
+    if shutil.which("nvidia-smi"):
+        try:
+            res = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True)
+            if res.returncode == 0 and "GPU" in res.stdout:
+                has_nvidia = True
+        except Exception:
+            pass
+
+    # Select optimal encoder and thread counts:
+    # 1. Dedicated NVIDIA GPU -> h264_nvenc
+    # 2. CPU / VM / AMD Linux -> libx264 with thread throttling (no CPU lockups)
+    if has_nvidia and not is_vm:
+        recording["Encoder"] = "h264_nvenc"
+        nvenc_cfg = recording.setdefault("h264_nvenc", {})
+        nvenc_cfg["RateControl"] = "cbr"
+        nvenc_cfg["Bitrate"] = "10M"
+        nvenc_cfg["Preset"] = "p4"
+        recording["PixelFormat"] = "yuv420p"
+        recording["Filters"] = ""
+        mode_desc = "NVIDIA NVENC GPU acceleration"
+    else:
+        recording["Encoder"] = "libx264"
+        libx264 = recording.setdefault("libx264", {})
+        libx264["RateControl"] = "crf"
+        libx264["Bitrate"] = "10M"
+        libx264["CRF"] = 23
+        libx264["Profile"] = "high"
+        libx264["Preset"] = "veryfast"
+
+        if is_vm or cpu_count <= 4:
+            threads = 2
+        elif cpu_count <= 8:
+            threads = max(2, cpu_count - 3)
+        else:
+            threads = max(4, cpu_count // 2)
+
+        libx264["AdditionalOptions"] = f"-threads {threads}"
+        recording["PixelFormat"] = "yuv420p"
+        recording["Filters"] = ""
+        mode_desc = f"CPU libx264 ({threads} threads, {cpu_count} total CPUs, VM={is_vm})"
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logging.info("Generated optimal danser profile at %s: %s", target_path, mode_desc)
+    return {
+        "path": str(target_path),
+        "encoder": recording.get("Encoder"),
+        "mode": mode_desc,
+        "is_vm": is_vm,
+        "cpu_count": cpu_count,
+    }
+
+
 def configure_danser_profile(config: Any, skins_directory: Path) -> Path:
     """Apply environment-controlled visual settings to the selected danser profile."""
     path = config.danser_dir / "settings" / f"{config.danser_settings}.json"
+    if not path.is_file():
+        generate_optimal_danser_profile(path)
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:

@@ -88,12 +88,17 @@
     "FrameHeight": 720,
     "FPS": 60,
     "EncodingFPSCap": 0,
-    "Encoder": "h264_vaapi",
-    "custom": {
-      "CustomOptions": "-vaapi_device /dev/dri/renderD128 -qp 20 -profile:v high"
+    "Encoder": "libx264",
+    "libx264": {
+      "RateControl": "crf",
+      "Bitrate": "10M",
+      "CRF": 23,
+      "Profile": "high",
+      "Preset": "veryfast",
+      "AdditionalOptions": "-threads 4"
     },
-    "PixelFormat": "nv12",
-    "Filters": "hwupload",
+    "PixelFormat": "yuv420p",
+    "Filters": "",
     "AudioCodec": "aac",
     "aac": {
       "Bitrate": "192k",
