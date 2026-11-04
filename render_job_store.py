@@ -57,6 +57,8 @@ class RenderJobStore:
             ("mods", "INTEGER DEFAULT 0"),
             ("mods_label", "TEXT DEFAULT 'NM'"),
             ("description", "TEXT"),
+            ("progress", "TEXT DEFAULT ''"),
+            ("result_metadata", "TEXT"),
         ]
         for col_name, col_type in new_cols:
             if col_name not in existing_cols:
@@ -154,22 +156,46 @@ class RenderJobStore:
                 self.connection.rollback()
                 raise
 
-    async def heartbeat(self, job_id: str, lease_token: str, lease_seconds: float = 60.0) -> bool:
+    async def heartbeat(
+        self,
+        job_id: str,
+        lease_token: str,
+        lease_seconds: float = 60.0,
+        progress: str = "",
+    ) -> bool:
         final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
         async with self.lock:
             try:
                 now = time.time()
-                cursor = self.connection.execute(
-                    f"UPDATE render_jobs SET lease_expires_at = ?, updated_at = ? "
-                    f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
-                    f"AND status NOT IN ({final_placeholders})",
-                    (now + lease_seconds, now, job_id, lease_token, now, *FINAL_STATUSES),
-                )
+                if progress:
+                    cursor = self.connection.execute(
+                        f"UPDATE render_jobs SET lease_expires_at = ?, updated_at = ?, progress = ? "
+                        f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
+                        f"AND status NOT IN ({final_placeholders})",
+                        (now + lease_seconds, now, progress, job_id, lease_token, now, *FINAL_STATUSES),
+                    )
+                else:
+                    cursor = self.connection.execute(
+                        f"UPDATE render_jobs SET lease_expires_at = ?, updated_at = ? "
+                        f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
+                        f"AND status NOT IN ({final_placeholders})",
+                        (now + lease_seconds, now, job_id, lease_token, now, *FINAL_STATUSES),
+                    )
                 self.connection.commit()
                 return cursor.rowcount == 1
             except Exception:
                 self.connection.rollback()
                 raise
+
+    async def get_active_leased_job(self) -> dict[str, Any] | None:
+        async with self.lock:
+            now = time.time()
+            row = self.connection.execute(
+                "SELECT * FROM render_jobs WHERE status IN ('leased', 'rendering', 'uploading') "
+                "AND lease_expires_at >= ? ORDER BY updated_at DESC LIMIT 1",
+                (now,),
+            ).fetchone()
+            return self._dict(row)
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         async with self.lock:
@@ -195,19 +221,30 @@ class RenderJobStore:
         self,
         job_id: str,
         lease_token: str,
+        result_metadata: str | None = None,
     ) -> bool:
         final_placeholders = ",".join("?" for _ in FINAL_STATUSES)
         async with self.lock:
             try:
                 now = time.time()
-                cursor = self.connection.execute(
-                    f"UPDATE render_jobs SET status = 'completed', "
-                    f"lease_token = NULL, lease_expires_at = NULL, updated_at = ? "
-                    f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
-                    f"AND artifact_path IS NOT NULL "
-                    f"AND status NOT IN ({final_placeholders})",
-                    (now, job_id, lease_token, now, *FINAL_STATUSES),
-                )
+                if result_metadata:
+                    cursor = self.connection.execute(
+                        f"UPDATE render_jobs SET status = 'completed', result_metadata = ?, "
+                        f"lease_token = NULL, lease_expires_at = NULL, updated_at = ? "
+                        f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
+                        f"AND artifact_path IS NOT NULL "
+                        f"AND status NOT IN ({final_placeholders})",
+                        (result_metadata, now, job_id, lease_token, now, *FINAL_STATUSES),
+                    )
+                else:
+                    cursor = self.connection.execute(
+                        f"UPDATE render_jobs SET status = 'completed', "
+                        f"lease_token = NULL, lease_expires_at = NULL, updated_at = ? "
+                        f"WHERE id = ? AND lease_token = ? AND lease_expires_at >= ? "
+                        f"AND artifact_path IS NOT NULL "
+                        f"AND status NOT IN ({final_placeholders})",
+                        (now, job_id, lease_token, now, *FINAL_STATUSES),
+                    )
                 self.connection.commit()
                 return cursor.rowcount == 1
             except Exception:

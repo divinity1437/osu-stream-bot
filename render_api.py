@@ -107,6 +107,14 @@ class RenderApi:
             return web.Response(status=204)
 
         job["lease_seconds"] = 60.0
+        job["danser_settings"] = {
+            "background_dim": getattr(self.config, "danser_background_dim_percent", 95),
+            "parallax_enabled": getattr(self.config, "danser_parallax_enabled", True),
+            "parallax_amount": getattr(self.config, "danser_parallax_amount_percent", 10),
+            "parallax_speed": getattr(self.config, "danser_parallax_speed_percent", 50),
+            "random_skin": getattr(self.config, "danser_random_skin", False),
+            "skin": getattr(self.config, "danser_skin", "default"),
+        }
         return web.json_response(job, status=200)
 
     async def handle_heartbeat(self, request: web.Request) -> web.Response:
@@ -122,7 +130,8 @@ class RenderApi:
         if not is_valid_uuid(lease_token):
             return web.json_response({"error": "Invalid lease token format"}, status=400)
 
-        success = await self.job_store.heartbeat(job_id, lease_token)
+        progress = str(body.get("progress") or "").strip()
+        success = await self.job_store.heartbeat(job_id, lease_token, progress=progress)
         if not success:
             return web.json_response({"error": "Stale lease or unknown job"}, status=410)
 
@@ -235,7 +244,10 @@ class RenderApi:
         if not artifact_path.is_relative_to(artifacts_root) or not artifact_path.is_file():
             return web.json_response({"error": "Stored artifact is invalid"}, status=409)
 
-        success = await self.job_store.complete_job(job_id, lease_token)
+        result_metadata = body.get("metadata")
+        metadata_json = json.dumps(result_metadata) if isinstance(result_metadata, dict) else None
+
+        success = await self.job_store.complete_job(job_id, lease_token, result_metadata=metadata_json)
         if not success:
             return web.json_response({"error": "Stale lease or unknown job"}, status=410)
 

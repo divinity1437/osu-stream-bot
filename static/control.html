@@ -188,7 +188,11 @@
         latestState = data;
         byId('phase').textContent = data.phase;
         byId('buffer').textContent = `${data.buffered}/${data.buffer_target}`;
-        byId('render').textContent = data.current_render_id || (data.render_backend === 'danser' && data.render_progress ? 'local' : 'none');
+        if (data.run_mode === 'controller') {
+          byId('render').textContent = data.current_render_id ? `job ${data.current_render_id}` : 'none';
+        } else {
+          byId('render').textContent = data.current_render_id || (data.render_backend === 'danser' && data.render_progress ? 'local' : 'none');
+        }
         if (data.run_mode === 'controller') {
           byId('backend').textContent = 'workers (remote)';
         } else if (data.render_backend === 'ordr') {
@@ -215,8 +219,10 @@
         renderQueue(data.queue);
         renderBackground(data.background);
         byId('details').textContent = JSON.stringify({
+          run_mode: data.run_mode,
           render_backend: data.render_backend,
           developer_mode: data.developer_mode,
+          current_render_id: data.current_render_id,
           progress: data.render_progress,
           played: data.played_count,
           skipped: data.skipped_count,

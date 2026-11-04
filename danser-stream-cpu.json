@@ -92,10 +92,10 @@
     "libx264": {
       "RateControl": "crf",
       "Bitrate": "10M",
-      "CRF": 22,
+      "CRF": 23,
       "Profile": "high",
       "Preset": "veryfast",
-      "AdditionalOptions": "-threads 5"
+      "AdditionalOptions": "-threads 2"
     },
     "PixelFormat": "yuv420p",
     "Filters": "",

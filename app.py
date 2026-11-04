@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import html
+import json
 import logging
 import mimetypes
 import os
@@ -235,23 +236,43 @@ class BackgroundStore:
 
 
 class RuntimeState:
-    def __init__(self, config: Config, store: QueueStore):
+    def __init__(self, config: Config, store: QueueStore, job_store: RenderJobStore | None = None):
         self.config = config
         self.store = store
+        self.job_store = job_store
         self.phase = "starting"
         self.last_error = ""
         self.websocket_connected = False
-        self.current_render_id: int | None = None
+        self.current_render_id: int | str | None = None
         self.render_progress = ""
 
     async def snapshot(self) -> dict[str, Any]:
         queue = await self.store.snapshot()
+        phase = self.phase
+        current_render_id = self.current_render_id
+        render_progress = self.render_progress
+
+        if self.config.run_mode == "controller" and self.job_store:
+            active_job = await self.job_store.get_active_leased_job()
+            if active_job:
+                current_render_id = active_job["id"][:8]
+                worker = active_job.get("worker_id") or "worker"
+                progress_str = active_job.get("progress") or ""
+                render_progress = progress_str if progress_str else f"rendering on {worker}"
+                phase = f"rendering job {active_job['id'][:8]} on {worker}"
+            else:
+                current_render_id = None
+                render_progress = ""
+                ready_count = len(queue)
+                if ready_count >= self.config.buffer_size:
+                    phase = f"buffer is full ({ready_count}/{self.config.buffer_size}), waiting for playback slot"
+
         return {
-            "phase": self.phase,
+            "phase": phase,
             "last_error": self.last_error,
             "websocket_connected": self.websocket_connected,
-            "current_render_id": self.current_render_id,
-            "render_progress": self.render_progress,
+            "current_render_id": current_render_id,
+            "render_progress": render_progress,
             "buffered": len(queue),
             "buffer_target": self.config.buffer_size,
             "queue": queue,
@@ -449,7 +470,10 @@ class Producer:
                 active_jobs = await self.job_store.count_active_jobs()
                 ready_count = len(self.store.ready_videos)
                 if ready_count + active_jobs >= self.config.buffer_size:
-                    self.runtime.phase = "controller buffer ready"
+                    if ready_count >= self.config.buffer_size:
+                        self.runtime.phase = f"buffer is full ({ready_count}/{self.config.buffer_size}), waiting for playback slot"
+                    else:
+                        self.runtime.phase = f"buffer waiting for {active_jobs} active render(s)"
                     self.runtime.last_error = ""
                     await asyncio.sleep(2)
                     continue
@@ -744,6 +768,7 @@ async def run(config: Config, no_producer: bool) -> None:
 
     if config.run_mode == "controller":
         job_store = RenderJobStore(config.root)
+        runtime.job_store = job_store
         reconciled = await job_store.reconcile_expired_jobs()
         if reconciled:
             logging.info("Startup reconciliation: recovered %d expired render job(s)", reconciled)
@@ -840,23 +865,51 @@ async def run(config: Config, no_producer: bool) -> None:
                                 logging.warning("ffprobe error on job %s: %s", job_id, probe_err)
                                 continue
 
+                        res_meta_raw = job.get("result_metadata")
+                        res_meta = {}
+                        if res_meta_raw:
+                            try:
+                                res_meta = json.loads(res_meta_raw) if isinstance(res_meta_raw, str) else res_meta_raw
+                            except Exception:
+                                res_meta = {}
+
+                        final_desc = res_meta.get("description") or job.get("description") or f"Replay render {job_id}"
+                        player_name = res_meta.get("player") or ""
+                        star_val = res_meta.get("stars")
+                        label_parts = [
+                            final_desc,
+                            f"{float(star_val):.2f}★" if star_val is not None else "",
+                            player_name,
+                            job.get("mods_label", "NM"),
+                        ]
+                        composite_label = " • ".join(p for p in label_parts if p)
+
                         metadata = {
                             "score_id": job.get("score_id"),
                             "submission_id": job.get("submission_id"),
                             "render_id": f"worker-{job_id[:8]}",
                             "renderer": "danser-worker",
+                            "beatmap_set_id": res_meta.get("beatmap_set_id"),
+                            "beatmap_id": res_meta.get("beatmap_id"),
+                            "artist": res_meta.get("artist"),
+                            "title": res_meta.get("title"),
+                            "difficulty": res_meta.get("difficulty"),
                             "mods": job.get("mods_label", "NM"),
                             "mods_value": job.get("mods", 0),
-                            "description": job.get("description") or f"Replay render {job_id}",
+                            "skin": res_meta.get("skin") or "default",
+                            "description": final_desc,
+                            "player": player_name,
+                            "stars": star_val,
+                            "label": composite_label,
                             "duration": duration,
                             "queued_at": int(time.time()),
                         }
                         queued_dest = await store.enqueue(artifact, metadata)
-                        logging.info("Moved completed render %s into queue: %s", job_id, queued_dest.name)
+                        logging.info("Moved completed render %s into queue: %s (%s)", job_id, queued_dest.name, composite_label)
 
                         submission_id = job.get("submission_id")
                         if submission_id is not None:
-                            await submissions.mark_ready(submission_id, queued_dest.name, None)
+                            await submissions.mark_ready(submission_id, queued_dest.name, res_meta.get("skin"))
 
                         await job_store.archive_job(job_id)
 
