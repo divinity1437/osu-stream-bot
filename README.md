@@ -27,11 +27,29 @@ Supports both **standalone (all-in-one)** operation and **distributed two-tier a
 ## Features
 
 - **OBS-Ready Web Player** at `/` for Browser Source with seamless video transitions.
-- **Web Control Dashboard** at `/control` with queue inspection, skip, volume controls, and temporary background upload.
+- **Web Control Dashboard** at `/control` with queue inspection, skip, volume controls, preset/custom waiting screens, and a **collapsible Connected Render Workers panel** showing real-time hardware specs, activity, and rendering progress.
 - **Multiple Replay Sources**: viewer submissions via Discord slash commands, manual uploads through browser or `inbox/`, and automatic discovery of random osu! scores.
 - **Dual Render Backends**: hosted [o!rdr](https://ordr.issou.best/) or high-performance local [danser-go](https://github.com/Wieku/danser-go).
-- **Distributed Architecture**: offload intensive danser rendering to dedicated worker nodes over WireGuard VPN.
+- **Auto-Detect Danser Profile**: unified `danser-stream.json` generated on the fly (`[D]` option in `configure.sh`) with auto-detection of CPU cores, virtualization, and GPU encoders (`nvenc` / `libx264`).
+- **Rich Stream Metadata**: real-time display of Beatmap Artist, Title, Difficulty, Star Rating (★), Player Name, and Mods.
+- **Dynamic Skin Support**: multi-skin synchronization with random skin selection per replay.
+- **Distributed Architecture**: offload intensive danser rendering to dedicated worker nodes over WireGuard or Tailscale VPN.
 - **Fail-Closed Safety & Validation**: strict atomic queuing, lease authorization tokens, and `ffprobe` stream validation.
+
+---
+
+## Roadmap
+
+- [x] **Distributed Controller / Worker Architecture**: offload danser rendering across separate remote nodes with secure token authentication and auto-recovery.
+- [x] **Live Worker Monitoring & Telemetry**: dynamic spoiler panel in `/control` reporting connected worker specs (CPU, RAM, GPU, OS) and real-time danser progress.
+- [x] **Hardware Auto-Detection**: single adaptive danser profile generator tailored to VM/bare-metal and CPU/GPU capabilities.
+- [x] **Rich Metadata Delivery**: worker-extracted beatmap and player metadata displayed directly in the web player and control queue.
+- [ ] **Native Stream Broadcaster (`stream_broadcaster`)**:
+  - Headless direct-to-RTMP broadcasting via FFmpeg without requiring an active OBS instance or local GPU.
+  - Multi-destination restreaming (simultaneous Twitch & YouTube output) using zero-copy stream passthrough (`-c copy`).
+  - Seamless standby screen loop (`tools/standby.mp4`) during queue starvation or paused stream state without disconnecting RTMP.
+  - Strict FIFO queue playback consuming `/api/next` and auto-acknowledging `/api/complete`.
+- [ ] **Automated Headless Web Overlay Compositor**: optional lightweight virtual framebuffer compositor for viewer donation alerts and chat on headless servers.
 
 ---
 
