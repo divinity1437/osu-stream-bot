@@ -24,6 +24,7 @@ declare -a SOURCE_KEYS=()
 declare -a QUEUE_KEYS=()
 declare -a WEB_KEYS=()
 declare -a DISCORD_KEYS=()
+declare -a BROADCASTER_KEYS=()
 
 DIRTY=0
 ACTIVE_TMP=""
@@ -62,7 +63,7 @@ define_setting() {
 
 define_setting "RUN_MODE" "standalone" "enum" \
     "Operation mode" \
-    "standalone: all-in-one local stream; controller: multi-node coordinator & web queue; render-worker: distributed danser rendering node."
+    "standalone: all-in-one local stream; controller: multi-node coordinator & web queue; render-worker: distributed danser rendering node; broadcaster: dedicated RTMP stream broadcaster node."
 
 define_setting "RENDER_BACKEND" "ordr" "enum" \
     "Render backend" \
@@ -224,6 +225,40 @@ define_setting "WORKER_ID" "" "optional_text" \
 define_setting "RENDER_HEARTBEAT_SECONDS" "15.0" "decimal" \
     "Worker lease heartbeat interval" \
     "Seconds between worker lease heartbeats while rendering a replay (range: 1.0 to 20.0)."
+
+define_setting "STREAM_TWITCH_KEY" "" "secret" \
+    "Twitch Stream Key" \
+    "Stream key for broadcasting to Twitch. Leave empty if Twitch is not used."
+define_setting "STREAM_TWITCH_URL" "rtmp://live.twitch.tv/app/" "text" \
+    "Twitch Ingest Server URL" \
+    "RTMP ingest server URL for Twitch (default: rtmp://live.twitch.tv/app/)."
+define_setting "STREAM_YOUTUBE_KEY" "" "secret" \
+    "YouTube Stream Key" \
+    "Stream key for broadcasting to YouTube Live. Leave empty if YouTube is not used."
+define_setting "STREAM_YOUTUBE_URL" "rtmp://a.rtmp.youtube.com/live2/" "text" \
+    "YouTube Ingest Server URL" \
+    "RTMP ingest server URL for YouTube (default: rtmp://a.rtmp.youtube.com/live2/)."
+define_setting "STREAM_CUSTOM_RTMP_URL" "" "optional_text" \
+    "Custom RTMP Output URL" \
+    "Optional third RTMP destination URL (for example local relay, Kick, or nginx-rtmp)."
+define_setting "STREAM_API_URL" "http://127.0.0.1:8787" "text" \
+    "Controller API URL" \
+    "HTTP address of the Controller web API used to retrieve replays and report completion."
+define_setting "STREAM_STANDBY_PATH" "tools/standby.mp4" "text" \
+    "Standby Video Path" \
+    "Path to the 60 FPS H.264 standby video loop played when the replay queue is empty."
+define_setting "STREAM_POLL_INTERVAL_SECONDS" "1.0" "decimal" \
+    "Broadcaster Poll Interval" \
+    "Seconds between polling the controller API during playback and standby." "0.5" "10.0"
+define_setting "STREAM_DRY_RUN" "false" "bool" \
+    "Broadcaster Dry-Run" \
+    "Test mode without sending stream to RTMP servers (outputs to null sink)."
+
+BROADCASTER_KEYS=(
+    STREAM_TWITCH_KEY STREAM_TWITCH_URL STREAM_YOUTUBE_KEY STREAM_YOUTUBE_URL
+    STREAM_CUSTOM_RTMP_URL STREAM_API_URL STREAM_STANDBY_PATH
+    STREAM_POLL_INTERVAL_SECONDS STREAM_DRY_RUN
+)
 
 ORDR_KEYS=(
     ORDR_DEVELOPER_MODE ORDR_API_KEY ORDR_SKIN ORDR_CUSTOM_SKIN
@@ -853,7 +888,8 @@ edit_enum() {
                 "${HINTS[$key]}\n\nCurrent value: $(display_value "$key")" \
                 "standalone" "All-in-one local stream instance (single machine)" \
                 "controller" "Controller node (web queue, player, worker API)" \
-                "render-worker" "Render worker node (dedicated danser machine)"); then
+                "render-worker" "Render worker node (dedicated danser machine)" \
+                "broadcaster" "Dedicated stream broadcaster node (RTMP to Twitch/YouTube via FFmpeg)"); then
                 VALUES["$key"]=$choice
                 DIRTY=1
             fi
@@ -1206,6 +1242,7 @@ main_menu() {
             "5" "Queue and playback" \
             "6" "Web player and uploads" \
             "7" "Discord bot [$(display_value DISCORD_ENABLED)]" \
+            "B" "Stream Broadcaster (Twitch & YouTube RTMP)" \
             "C" "Controller & Worker Cluster" \
             "D" "Auto-detect system & configure danser profile" \
             "8" "Show all current values" \
@@ -1228,6 +1265,7 @@ main_menu() {
             5) open_category "Queue" "Buffer, producer, and rendered video storage settings." "${QUEUE_KEYS[@]}" ;;
             6) open_category "Web" "Server address, upload limits, and initial volume." "${WEB_KEYS[@]}" ;;
             7) open_category "Discord" "Accept .osr files through Discord slash commands." "${DISCORD_KEYS[@]}" ;;
+            B|b) open_category "Broadcaster" "Headless 24/7 RTMP stream broadcaster settings (Twitch & YouTube)." "${BROADCASTER_KEYS[@]}" ;;
             C|c) open_category "Cluster" "Multi-node Controller & Render Worker cluster settings." "${CLUSTER_KEYS[@]}" ;;
             D|d) autodetect_danser_profile ;;
             8) show_summary ;;

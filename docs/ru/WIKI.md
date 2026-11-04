@@ -23,38 +23,41 @@
 Проект предназначен для организации круглосуточного стрима osu!standard реплеев на Twitch / YouTube. Система может работать как единый монолит (standalone), так и распределенно (контроллер + выделенный воркер рендера).
 
 ```
-       [ Twitch / YouTube RTMP ]
-                   ▲
-                   │
-      ┌────────────┴────────────┐
-      │   Main Controller VPS   │
-      │ ┌─────────────────────┐ │
-      │ │   Xvfb + Headless   │ │
-      │ │      OBS Studio     │ │
-      │ └──────────▲──────────┘ │
-      │            │ Browser    │
-      │ ┌──────────┴──────────┐ │
-      │ │  Web Player :8787   │ │
-      │ └──────────▲──────────┘ │
-      │ ┌──────────┴──────────┐ │
-      │ │  Render API :8790   │ │
-      │ └──────────▲──────────┘ │
-      └────────────┼────────────┘
-                   │ WireGuard VPN (10.10.0.0/24)
-                   │ Bearer Token + Lease Auth
-      ┌────────────┴────────────┐
-      │    Render Worker VPS    │
-      │ ┌─────────────────────┐ │
-      │ │  render_worker.py   │ │
-      │ └──────────▲──────────┘ │
-      │ ┌──────────┴──────────┐ │
-      │ │ danser-go (CPU/GPU) │ │
-      │ └─────────────────────┘ │
-      └─────────────────────────┘
+                  [ Twitch / YouTube RTMP ]
+                       ▲             ▲
+      (Zero-CPU Native)│             │ (Legacy Browser Source)
+      ┌────────────────┴─────────────┴─────────────────┐
+      │              Main Controller VPS               │
+      │ ┌──────────────────────┐  ┌──────────────────┐ │
+      │ │ stream_broadcaster   │  │  Xvfb + Headless │ │
+      │ │ (FFmpeg -c copy)     │  │    OBS Studio    │ │
+      │ └──────────▲───────────┘  └────────▲─────────┘ │
+      │            │                       │           │
+      │            └───────────┬───────────┘           │
+      │                        │ Local API / Browser   │
+      │              ┌─────────┴─────────┐             │
+      │              │ Web Player :8787  │             │
+      │              └─────────▲─────────┘             │
+      │              ┌─────────┴─────────┐             │
+      │              │ Render API :8790  │             │
+      │              └─────────▲─────────┘             │
+      └────────────────────────┼───────────────────────┘
+                               │ WireGuard VPN (10.10.0.0/24)
+                               │ Bearer Token + Lease Auth
+                  ┌────────────┴────────────┐
+                  │    Render Worker VPS    │
+                  │ ┌─────────────────────┐ │
+                  │ │  render_worker.py   │ │
+                  │ └──────────▲──────────┘ │
+                  │ ┌──────────┴──────────┐ │
+                  │ │ danser-go (CPU/GPU) │ │
+                  │ └─────────────────────┘ │
+                  └─────────────────────────┘
 ```
 
 ### Ключевые модули:
 - **`app.py`**: Главный монолит и точка входа контроллера. Запускает aiohttp веб-сервер, веб-плеер (`/`), админ-панель (`/control`), фоновый Producer и фоновый наблюдатель завершенных задач.
+- **`stream_broadcaster.py`**: Автономный 24/7 RTMP вещатель (Twitch + YouTube). Потребляет <0.5% CPU благодаря `-c copy` без транскодирования, автоматически переключается на `tools/standby.mp4` при пустой очереди и полностью заменяет тяжёлый OBS на сервере.
 - **`config.py`**: Валидация переменных окружения, fail-closed проверки для ролей и структуры папок.
 - **`queue_store.py`**: Управление очередью готовых MP4 (`video_queue/`), буферизацией, состоянием плеера (`state.json`), а также директориями `inbox/`, `work/`, `archive/`, `rejected/`.
 - **`render_job_store.py`**: Асинхронное SQLite-хранилище задач рендера (`render_jobs.db`). Обеспечивает атомарный захват (`claim_job`), управление арендой (`lease_token`, `lease_expires_at`), heartbeat и архивацию.
@@ -68,8 +71,9 @@
 ## 2. Режимы работы (RUN_MODE)
 
 - **`standalone`** (по умолчанию): Всё в одном процессе. Локально рендерит через `danser-go` или `o!rdr`, воспроизводит видео и управляет очередью. Идеально для одного мощного ПК или монолитного сервера.
-- **`controller`**: Главный узел. Ведет базу задач, раздает задачи воркерам через `render_api.py`, принимает готовые MP4, валидирует их через `ffprobe` и передает в веб-плеер для OBS. Локальный danser не запускается.
+- **`controller`**: Главный узел. Ведет базу задач, раздает задачи воркерам через `render_api.py`, принимает готовые MP4, валидирует их через `ffprobe` и передает в веб-плеер и вещателю. Локальный danser не запускается.
 - **`render-worker`**: Выделенный узел рендера (CPU/GPU). Не поднимает веб-сервер, непрерывно опрашивает контроллер, рендерит реплеи и отправляет артефакты обратно.
+- **`broadcaster`**: Режим для отдельной выделенной ноды вещания (если стриминг вынесен на отдельный сервер). При стандартной схеме с двумя серверами на контроллере остаётся `RUN_MODE=controller`, а вещатель запускается параллельно как клиент через `./run-broadcaster.sh` или `stream-broadcaster.service`.
 
 ---
 
@@ -85,7 +89,7 @@
 ```bash
 sudo ./deploy/install.sh controller
 ```
-Скрипт установит Python-окружение, `ffmpeg`, `xvfb`, `obs-studio`, `nginx`, `apache2-utils`, создаст пользователя `osu-stream` и установит systemd-юниты.
+Скрипт установит Python-окружение, `ffmpeg`, `nginx`, `apache2-utils`, создаст пользователя `osu-stream` и установит systemd-юниты.
 
 Настройте `/etc/osu-stream/controller.env`:
 ```env
@@ -93,12 +97,23 @@ RUN_MODE=controller
 RENDER_API_HOST=10.10.0.1
 RENDER_API_PORT=8790
 RENDER_API_TOKEN=<сгенерированный_токен_openssl_rand_-hex_32>
+
+# Настройки прямого RTMP вещания (Twitch и YouTube)
+STREAM_TWITCH_KEY=live_...
+STREAM_YOUTUBE_KEY=xxxx-...
+STREAM_API_URL=http://127.0.0.1:8787
 ```
 
-Запустите сервисы:
-```bash
-sudo systemctl start xvfb osu-stream-controller obs
-```
+**Выбор вещателя на Controller VPS:**
+- **Рекомендуемый (Headless Native Broadcaster, <0.5% CPU)**:
+  ```bash
+  sudo systemctl enable --now osu-stream-controller stream-broadcaster
+  ```
+  *OBS Studio и виртуальный дисплей Xvfb не требуются! Вещатель работает непрерывно 24/7.*
+- **Классический (OBS Studio с Browser Source)**:
+  ```bash
+  sudo systemctl enable --now xvfb osu-stream-controller obs
+  ```
 
 ### Шаг 3. Установка Render Worker VPS
 ```bash
@@ -161,6 +176,15 @@ sudo systemctl start osu-stream-worker
 | `DANSER_RENDER_TIMEOUT_SECONDS`| `3600` | Таймаут процесса рендера одной карты |
 | `PLAYER_VOLUME` | `20` | Начальная громкость воспроизведения (0..100) |
 | `DISCORD_ENABLED` | `false` | Включение Discord-бота |
+| `STREAM_TWITCH_KEY` | *(пусто)* | Ключ трансляции Twitch для прямого вещателя |
+| `STREAM_TWITCH_URL` | `rtmp://live.twitch.tv/app/` | Сервер ingest Twitch |
+| `STREAM_YOUTUBE_KEY`| *(пусто)* | Ключ трансляции YouTube Live |
+| `STREAM_YOUTUBE_URL`| `rtmp://a.rtmp.youtube.com/live2/` | Сервер ingest YouTube |
+| `STREAM_CUSTOM_RTMP_URL` | *(пусто)* | Дополнительный RTMP URL назначения |
+| `STREAM_API_URL` | `http://127.0.0.1:8787` | Адрес API контроллера для вещателя |
+| `STREAM_STANDBY_PATH`| `tools/standby.mp4` | Путь к 60 FPS видео-заглушке ожидания |
+| `STREAM_POLL_INTERVAL_SECONDS` | `1.0` | Интервал проверки статуса при вещании (сек) |
+| `STREAM_DRY_RUN` | `false` | Тестовый режим без передачи пакетов в RTMP |
 
 ---
 
@@ -183,20 +207,35 @@ sudo systemctl start osu-stream-worker
 
 ---
 
-## 7. Настройка OBS Studio
+## 7. Вещание в RTMP: Stream Broadcaster vs OBS Studio
 
-1. **Browser Source**:
+### Вариант 1: Headless Stream Broadcaster (Рекомендуется для VPS)
+Легковесный вещатель через FFmpeg напрямую отправляет реплеи в RTMP без перекодирования (`-c copy`):
+- **Нагрузка на процессор**: менее 0.5% одного CPU-ядра.
+- **Требования**: не требует графической подсистемы, Xvfb, OpenGL и GPU на контроллере.
+- **Поддержка рестрима**: одновременная параллельная отправка на Twitch и YouTube.
+- **Бесшовная заглушка**: при пустой очереди крутит `tools/standby.mp4` без разрыва RTMP-сессии.
+
+**Ручной запуск:**
+```bash
+./run-broadcaster.sh
+# Или запуск проверки без стрима:
+./run-broadcaster.sh --dry-run
+```
+
+**Systemd сервис:**
+```bash
+sudo systemctl enable --now stream-broadcaster
+```
+
+### Вариант 2: OBS Studio с Browser Source (Классический режим)
+Подходит, если вам необходим сложный визуальный оверлей, чат или донат-виджеты:
+1. **Browser Source в OBS**:
    - URL: `http://127.0.0.1:8787/`
-   - Разрешение: `1280x720` (или `1920x1080` в зависимости от настроек)
-   - Включите: «Управлять звуком с помощью OBS» (Control audio via OBS) и «Загружать заново страницу, если источник становится активным».
+   - Разрешение: `1280x720` (или `1920x1080`)
+   - Включите: «Управлять звуком с помощью OBS» и «Загружать заново страницу, если источник становится активным».
 2. **Headless запуск на сервере**:
-   Юнит `obs.service` запускает OBS Studio через программный OpenGL драйвер llvmpipe:
-   ```ini
-   Environment="DISPLAY=:99"
-   Environment="LIBGL_ALWAYS_SOFTWARE=1"
-   Environment="GALLIUM_DRIVER=llvmpipe"
-   ExecStart=/usr/bin/obs --startstreaming --minimize-to-tray --disable-missing-files-check
-   ```
+   Юнит `obs.service` запускает OBS Studio через программный OpenGL драйвер llvmpipe (`xvfb.service + obs.service`). Требует ~1.5–2.5 ядра CPU для рендеринга сцены.
 
 ---
 

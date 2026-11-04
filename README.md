@@ -44,7 +44,7 @@ Supports both **standalone (all-in-one)** operation and **distributed two-tier a
 - [x] **Live Worker Monitoring & Telemetry**: dynamic spoiler panel in `/control` reporting connected worker specs (CPU, RAM, GPU, OS) and real-time danser progress.
 - [x] **Hardware Auto-Detection**: single adaptive danser profile generator tailored to VM/bare-metal and CPU/GPU capabilities.
 - [x] **Rich Metadata Delivery**: worker-extracted beatmap and player metadata displayed directly in the web player and control queue.
-- [ ] **Native Stream Broadcaster (`stream_broadcaster`)**:
+- [x] **Native Stream Broadcaster (`stream_broadcaster`)**:
   - Headless direct-to-RTMP broadcasting via FFmpeg without requiring an active OBS instance or local GPU.
   - Multi-destination restreaming (simultaneous Twitch & YouTube output) using zero-copy stream passthrough (`-c copy`).
   - Seamless standby screen loop (`tools/standby.mp4`) during queue starvation or paused stream state without disconnecting RTMP.
@@ -106,8 +106,14 @@ The codebase, rendering pipeline, and network stack have been tested on real phy
   ```bash
   ./run.sh --no-producer
   ```
+- **Headless 24/7 RTMP Broadcaster (Direct to Twitch & YouTube via FFmpeg):**
+  ```bash
+  ./run-broadcaster.sh
+  # Or test locally without pushing to RTMP:
+  ./run-broadcaster.sh --dry-run
+  ```
 - **Access URLs:**
-  - Web Player: `http://127.0.0.1:8787/` (add as OBS Browser Source)
+  - Web Player: `http://127.0.0.1:8787/` (add as OBS Browser Source if using OBS)
   - Control Panel: `http://127.0.0.1:8787/control`
   - Health check: `http://127.0.0.1:8787/health`
 

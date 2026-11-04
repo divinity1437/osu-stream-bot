@@ -105,8 +105,8 @@ class Config:
     def from_env(cls, root: Path | None = None) -> "Config":
         base_root = (root or ROOT).resolve()
         run_mode = os.getenv("RUN_MODE", "standalone").strip().lower()
-        if run_mode not in {"standalone", "controller", "render-worker"}:
-            raise ValueError(f"Unsupported RUN_MODE: {run_mode}. Must be 'standalone', 'controller', or 'render-worker'")
+        if run_mode not in {"standalone", "controller", "render-worker", "broadcaster", "stream-broadcaster"}:
+            raise ValueError(f"Unsupported RUN_MODE: {run_mode}. Must be 'standalone', 'controller', 'render-worker', or 'broadcaster'")
 
         render_backend = os.getenv("RENDER_BACKEND", "ordr").strip().lower()
         developer_mode = env_bool("ORDR_DEVELOPER_MODE", True)
@@ -348,6 +348,23 @@ def check_role_requirements(config: Config) -> None:
         print(f"ffmpeg:         {ffmpeg}")
         print(f"ffprobe:        {ffprobe}")
         print("Render-worker configuration check passed")
+        return
+
+    if config.run_mode in {"broadcaster", "stream-broadcaster"}:
+        standby = config.root / "tools" / "standby.mp4"
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        missing_binaries = []
+        if not ffmpeg:
+            missing_binaries.append("ffmpeg")
+        if not ffprobe:
+            missing_binaries.append("ffprobe")
+        if missing_binaries:
+            raise SystemExit("Missing required binaries: " + ", ".join(missing_binaries))
+        print(f"Role:           Stream Broadcaster")
+        print(f"Standby video:  {standby} ({'exists' if standby.is_file() else 'auto-generate'})")
+        print(f"Python:         {sys.version.split()[0]}")
+        print("Broadcaster configuration check passed")
         return
 
     # Standalone mode

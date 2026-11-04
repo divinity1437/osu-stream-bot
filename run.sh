@@ -10,6 +10,8 @@ fi
 
 if [[ "${RUN_MODE_VAL,,}" == "render-worker" ]]; then
   exec ./venv/bin/python render_worker.py "$@"
+elif [[ "${RUN_MODE_VAL,,}" == "broadcaster" || "${RUN_MODE_VAL,,}" == "stream-broadcaster" ]]; then
+  exec ./venv/bin/python stream_broadcaster.py "$@"
 else
   exec ./venv/bin/python app.py "$@"
 fi

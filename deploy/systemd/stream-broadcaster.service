@@ -1,0 +1,32 @@
+[Unit]
+Description=osu! replay stream Headless RTMP Broadcaster (Twitch & YouTube)
+After=network.target network-online.target osu-stream-controller.service
+Wants=osu-stream-controller.service
+
+[Service]
+Type=simple
+User=osu-stream
+Group=osu-stream
+WorkingDirectory=/opt/osu-stream-bot
+
+Environment="HOME=/home/osu-stream"
+
+# Wait until the controller HTTP endpoint is ready
+ExecStartPre=/bin/sh -c 'for i in $$(seq 1 60); do /usr/bin/curl -fsS http://127.0.0.1:8787/health >/dev/null && exit 0; sleep 1; done; exit 1'
+ExecStart=/opt/osu-stream-bot/venv/bin/python /opt/osu-stream-bot/stream_broadcaster.py
+
+Restart=always
+RestartSec=5s
+UMask=0077
+
+LimitNOFILE=65536
+TimeoutStopSec=15s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/osu-stream-bot/tools
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target
