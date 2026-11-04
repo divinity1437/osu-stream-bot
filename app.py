@@ -470,6 +470,7 @@ class Producer:
         while True:
             candidate: ReplayCandidate | None = None
             try:
+                await self.job_store.reconcile_expired_jobs()
                 active_jobs = await self.job_store.count_active_jobs()
                 ready_count = len(self.store.ready_videos)
                 if ready_count + active_jobs >= self.config.buffer_size:
