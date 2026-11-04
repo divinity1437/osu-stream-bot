@@ -526,7 +526,7 @@ validate_all() {
         VALIDATION_WARNINGS+=("o!rdr has a very strict request rate limit without an API key.")
     fi
 
-    if [[ ${VALUES[RENDER_BACKEND]} == "danser" ]]; then
+    if [[ ${VALUES[RENDER_BACKEND]} == "danser" && ${VALUES[RUN_MODE]} != "controller" ]]; then
         danser_dir=${VALUES[DANSER_DIR]}
         [[ "$danser_dir" == /* ]] || danser_dir="$PROJECT_DIR/$danser_dir"
         if [[ ! -x "$danser_dir/danser-cli" && ! -f "$danser_dir/danser-cli.exe" ]]; then
