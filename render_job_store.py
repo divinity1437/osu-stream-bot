@@ -46,6 +46,17 @@ class RenderJobStore:
                 ON render_jobs(status, created_at, id);
             CREATE INDEX IF NOT EXISTS idx_render_jobs_lease_expiry
                 ON render_jobs(status, lease_expires_at);
+
+            CREATE TABLE IF NOT EXISTS workers (
+                id TEXT PRIMARY KEY,
+                last_seen REAL NOT NULL,
+                ip TEXT,
+                specs TEXT,
+                current_job_id TEXT,
+                progress TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_workers_last_seen
+                ON workers(last_seen);
             """
         )
         # Handle existing databases without the metadata columns
@@ -312,6 +323,58 @@ class RenderJobStore:
             except Exception:
                 self.connection.rollback()
                 raise
+
+    async def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        ip: str = "",
+        specs: dict[str, Any] | None = None,
+        current_job_id: str | None = None,
+        progress: str = "",
+    ) -> None:
+        import json
+        now = time.time()
+        specs_json = json.dumps(specs) if specs is not None else None
+        async with self.lock:
+            try:
+                self.connection.execute(
+                    """
+                    INSERT INTO workers (id, last_seen, ip, specs, current_job_id, progress)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_seen = excluded.last_seen,
+                        ip = CASE WHEN excluded.ip != '' THEN excluded.ip ELSE workers.ip END,
+                        specs = CASE WHEN excluded.specs IS NOT NULL THEN excluded.specs ELSE workers.specs END,
+                        current_job_id = excluded.current_job_id,
+                        progress = excluded.progress
+                    """,
+                    (worker_id, now, ip, specs_json, current_job_id, progress),
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+
+    async def get_active_workers(self, timeout_seconds: float = 120.0) -> list[dict[str, Any]]:
+        import json
+        cutoff = time.time() - timeout_seconds
+        async with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM workers WHERE last_seen >= ? ORDER BY last_seen DESC",
+                (cutoff,),
+            ).fetchall()
+            workers = []
+            for r in rows:
+                item = dict(r)
+                if item.get("specs"):
+                    try:
+                        item["specs"] = json.loads(item["specs"])
+                    except Exception:
+                        item["specs"] = {}
+                else:
+                    item["specs"] = {}
+                workers.append(item)
+            return workers
 
     async def close(self) -> None:
         async with self.lock:

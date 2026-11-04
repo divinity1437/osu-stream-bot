@@ -102,9 +102,27 @@ class RenderApi:
         if not worker_id or not isinstance(worker_id, str):
             return web.json_response({"error": "worker_id is required"}, status=400)
 
+        remote_ip = request.remote or ""
+        specs = body.get("specs") if isinstance(body.get("specs"), dict) else None
+        await self.job_store.record_worker_heartbeat(
+            worker_id=worker_id,
+            ip=remote_ip,
+            specs=specs,
+            current_job_id=None,
+            progress="idle",
+        )
+
         job = await self.job_store.claim_job(worker_id)
         if job is None:
             return web.Response(status=204)
+
+        await self.job_store.record_worker_heartbeat(
+            worker_id=worker_id,
+            ip=remote_ip,
+            specs=specs,
+            current_job_id=job["id"],
+            progress="claimed",
+        )
 
         job["lease_seconds"] = 60.0
         job["danser_settings"] = {
@@ -134,6 +152,17 @@ class RenderApi:
         success = await self.job_store.heartbeat(job_id, lease_token, progress=progress)
         if not success:
             return web.json_response({"error": "Stale lease or unknown job"}, status=410)
+
+        worker_id = body.get("worker_id")
+        if worker_id and isinstance(worker_id, str):
+            specs = body.get("specs") if isinstance(body.get("specs"), dict) else None
+            await self.job_store.record_worker_heartbeat(
+                worker_id=worker_id,
+                ip=request.remote or "",
+                specs=specs,
+                current_job_id=job_id,
+                progress=progress,
+            )
 
         return web.json_response({"status": "ok"}, status=200)
 

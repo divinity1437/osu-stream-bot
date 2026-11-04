@@ -37,6 +37,20 @@
     .muted { color: #aaa3bc; } .error { color: #ff8cae; }
     #action-result, #upload-result { min-height: 24px; margin-top: 10px; }
     a { color: #ff79b8; }
+    details { border: 1px solid #302a42; border-radius: 12px; background: #151321; margin-top: 24px; overflow: hidden; }
+    details summary { padding: 14px 18px; font-weight: 700; font-size: 16px; cursor: pointer; user-select: none; background: #1c182c; display: flex; align-items: center; justify-content: space-between; }
+    details summary:hover { background: #26213c; }
+    .worker-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background: #2f2847; color: #a496c8; }
+    .worker-badge.online { background: #194d33; color: #69e4a3; }
+    .worker-badge.busy { background: #5c3b17; color: #f5b041; }
+    .worker-card { padding: 16px; border: 1px solid #2a243a; border-radius: 10px; background: #1e1a2f; margin-bottom: 12px; }
+    .worker-card:last-child { margin-bottom: 0; }
+    .worker-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .worker-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .worker-specs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; font-size: 13px; margin-top: 10px; }
+    .spec-item { background: #151321; padding: 8px 12px; border-radius: 6px; border: 1px solid #262139; }
+    .spec-label { color: #8a829e; font-size: 11px; text-transform: uppercase; margin-bottom: 3px; }
+    .spec-val { color: #eeeaf7; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
@@ -47,6 +61,16 @@
     <div class="metric">Current render<b id="render">…</b></div>
     <div class="metric">Renderer<b id="backend">…</b></div>
   </div>
+
+  <details id="workers-spoiler" style="display: none;">
+    <summary>
+      <span>Connected Render Workers (<span id="workers-count">0</span>)</span>
+      <span id="workers-summary-badge" class="worker-badge">idle</span>
+    </summary>
+    <div style="padding: 16px;" id="workers-list">
+      <div class="muted">No workers connected yet</div>
+    </div>
+  </details>
 
   <h2>Playback</h2>
   <div class="card">
@@ -182,6 +206,86 @@
       }
     }
 
+    function renderWorkers(workers, runMode) {
+      const spoiler = byId('workers-spoiler');
+      if (runMode !== 'controller') {
+        spoiler.style.display = 'none';
+        return;
+      }
+      spoiler.style.display = 'block';
+      const countEl = byId('workers-count');
+      const badgeEl = byId('workers-summary-badge');
+      const listEl = byId('workers-list');
+
+      countEl.textContent = workers ? workers.length : 0;
+      if (!workers || !workers.length) {
+        badgeEl.textContent = '0 online';
+        badgeEl.className = 'worker-badge';
+        listEl.replaceChildren();
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'No workers connected in the last 2 minutes';
+        listEl.append(empty);
+        return;
+      }
+
+      let busyCount = 0;
+      listEl.replaceChildren();
+
+      for (const w of workers) {
+        const isBusy = Boolean(w.current_job_id);
+        if (isBusy) busyCount++;
+
+        const card = document.createElement('div');
+        card.className = 'worker-card';
+
+        const header = document.createElement('div');
+        header.className = 'worker-header';
+
+        const title = document.createElement('div');
+        title.className = 'worker-title';
+        title.textContent = w.id;
+
+        const badge = document.createElement('span');
+        badge.className = `worker-badge ${isBusy ? 'busy' : 'online'}`;
+        badge.textContent = isBusy ? 'rendering' : 'idle';
+        header.append(title, badge);
+
+        const specs = w.specs || {};
+        const specsGrid = document.createElement('div');
+        specsGrid.className = 'worker-specs-grid';
+
+        const items = [
+          { label: 'IP Address', val: w.ip || 'unknown' },
+          { label: 'OS & Kernel', val: specs.os || 'unknown' },
+          { label: 'CPU Model', val: specs.cpu_model ? `${specs.cpu_model} (${specs.cpu_cores || '?'} cores)` : `${specs.cpu_cores || '?'} cores` },
+          { label: 'RAM', val: specs.ram_total_gb ? `${specs.ram_total_gb} GB (avail: ${specs.ram_avail_gb || '?'} GB)` : 'unknown' },
+          { label: 'GPU / Acceleration', val: specs.gpu || (specs.virt && specs.virt !== 'none' ? `None (${specs.virt} VM)` : 'CPU only') },
+          { label: 'Status / Activity', val: isBusy ? `${w.progress || 'working'} (job ${w.current_job_id.slice(0, 8)})` : (w.progress || 'idle') },
+        ];
+
+        for (const item of items) {
+          const specBox = document.createElement('div');
+          specBox.className = 'spec-item';
+          const lbl = document.createElement('div');
+          lbl.className = 'spec-label';
+          lbl.textContent = item.label;
+          const v = document.createElement('div');
+          v.className = 'spec-val';
+          v.textContent = item.val;
+          v.title = item.val;
+          specBox.append(lbl, v);
+          specsGrid.append(specBox);
+        }
+
+        card.append(header, specsGrid);
+        listEl.append(card);
+      }
+
+      badgeEl.textContent = busyCount > 0 ? `${busyCount}/${workers.length} busy` : `${workers.length} online`;
+      badgeEl.className = `worker-badge ${busyCount > 0 ? 'busy' : 'online'}`;
+    }
+
     async function refresh() {
       try {
         const data = await api('/api/status');
@@ -218,6 +322,7 @@
         }
         renderQueue(data.queue);
         renderBackground(data.background);
+        renderWorkers(data.workers, data.run_mode);
         byId('details').textContent = JSON.stringify({
           run_mode: data.run_mode,
           render_backend: data.render_backend,

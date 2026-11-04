@@ -251,8 +251,10 @@ class RuntimeState:
         phase = self.phase
         current_render_id = self.current_render_id
         render_progress = self.render_progress
+        workers: list[dict[str, Any]] = []
 
         if self.config.run_mode == "controller" and self.job_store:
+            workers = await self.job_store.get_active_workers()
             active_job = await self.job_store.get_active_leased_job()
             if active_job:
                 current_render_id = active_job["id"][:8]
@@ -273,6 +275,7 @@ class RuntimeState:
             "websocket_connected": self.websocket_connected,
             "current_render_id": current_render_id,
             "render_progress": render_progress,
+            "workers": workers,
             "buffered": len(queue),
             "buffer_target": self.config.buffer_size,
             "queue": queue,

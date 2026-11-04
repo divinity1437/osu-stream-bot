@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import platform
+import subprocess
 
 from config import Config, ROOT, load_env
 from danser_renderer import (
@@ -68,6 +70,7 @@ class RenderWorker:
         self.skins_directory = resolve_danser_skins_dir(config)
         self.settings_path = configure_danser_profile(config, self.skins_directory)
         self.last_skin: str | None = None
+        self.specs = self._collect_system_specs()
         available_skins = discover_danser_skins(self.skins_directory)
         logging.info(
             "Worker danser skins: %s (%d custom skin%s found)",
@@ -96,6 +99,69 @@ class RenderWorker:
             selected = "default"
         self.last_skin = selected
         return selected
+
+    def _collect_system_specs(self) -> dict[str, Any]:
+        specs: dict[str, Any] = {
+            "hostname": socket.gethostname(),
+            "os": f"{platform.system()} {platform.release()}",
+            "arch": platform.machine(),
+            "cpu_cores": os.cpu_count() or 1,
+        }
+        try:
+            with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if "model name" in line:
+                        specs["cpu_model"] = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            pass
+        if "cpu_model" not in specs:
+            specs["cpu_model"] = platform.processor() or "Unknown CPU"
+
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                mem = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        k = parts[0].strip()
+                        v = parts[1].strip().split()[0]
+                        if k in ("MemTotal", "MemAvailable"):
+                            mem[k] = int(v) * 1024
+                if "MemTotal" in mem:
+                    specs["ram_total_gb"] = round(mem["MemTotal"] / (1024**3), 1)
+                if "MemAvailable" in mem:
+                    specs["ram_avail_gb"] = round(mem["MemAvailable"] / (1024**3), 1)
+        except Exception:
+            pass
+
+        try:
+            virt = subprocess.check_output(
+                ["systemd-detect-virt"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            specs["virt"] = virt
+        except Exception:
+            specs["virt"] = "none"
+
+        try:
+            lspci_out = subprocess.check_output(
+                ["lspci"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            gpus = [
+                line.split(":", 2)[-1].strip()
+                for line in lspci_out.splitlines()
+                if any(k in line.lower() for k in ("vga compatible", "3d controller", "display controller"))
+            ]
+            if gpus:
+                specs["gpu"] = gpus[0]
+        except Exception:
+            pass
+
+        return specs
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {}
@@ -158,7 +224,9 @@ class RenderWorker:
                 await asyncio.sleep(self.heartbeat_interval)
                 payload = {
                     "lease_token": lease_token,
+                    "worker_id": self.worker_id,
                     "progress": self.current_progress,
+                    "specs": self.specs,
                 }
                 request_started = time.monotonic()
                 async with session.post(
@@ -622,7 +690,10 @@ class RenderWorker:
     async def run(self) -> None:
         logging.info("Starting Render Worker %s (controller=%s)", self.worker_id, self.controller_url)
         claim_url = f"{self.controller_url}/internal/v1/render/jobs/claim"
-        claim_payload = {"worker_id": self.worker_id}
+        claim_payload = {
+            "worker_id": self.worker_id,
+            "specs": self.specs,
+        }
 
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
