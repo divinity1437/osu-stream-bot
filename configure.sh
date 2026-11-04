@@ -1146,6 +1146,10 @@ print('\nProfile tools/danser/settings/stream.json has been generated successful
 }
 
 run_project_check() {
+    local temp status
+    temp=$(mktemp "${TMPDIR:-/tmp}/osu-stream-check.XXXXXX")
+    ACTIVE_TMP=$temp
+    set +e
     ./check.sh > "$temp" 2>&1
     status=$?
     set -e
