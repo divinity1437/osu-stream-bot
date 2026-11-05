@@ -228,8 +228,7 @@ class StreamBroadcaster:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
+            stderr=subprocess.DEVNULL,
         )
         logging.info("Downstream RTMP broadcaster process started (PID %d)", self.downstream_process.pid)
 
