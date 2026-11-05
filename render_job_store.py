@@ -307,11 +307,19 @@ class RenderJobStore:
                 self.connection.rollback()
                 raise
 
-    async def reconcile_expired_jobs(self) -> int:
+    async def reconcile_expired_jobs(self, max_attempts: int = 2) -> int:
         now = time.time()
         async with self.lock:
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
+                # 1. Fail jobs that have already exceeded max retry attempts
+                self.connection.execute(
+                    "UPDATE render_jobs SET status = 'failed', worker_id = NULL, lease_token = NULL, "
+                    "lease_expires_at = NULL, error = 'expired_max_attempts_exceeded', updated_at = ? "
+                    "WHERE status IN ('leased', 'rendering') AND lease_expires_at < ? AND attempts >= ?",
+                    (now, now, max_attempts),
+                )
+                # 2. Return remaining expired jobs back to queued for another attempt
                 cursor = self.connection.execute(
                     "UPDATE render_jobs SET status = 'queued', worker_id = NULL, lease_token = NULL, "
                     "lease_expires_at = NULL, attempts = attempts + 1, updated_at = ? "
